@@ -1,63 +1,120 @@
 import json
+import requests
+import sys
 import os
 from datetime import datetime
 
-# 定義檔案路徑
-INPUT_JSON = "data/latest_report.json"
-OUTPUT_MISSION = "data/moltbot_mission.txt"  # 這是給 Moltbot 看的「任務簡報」
+# === 設定區 ===
+REPORT_FILE = "data/latest_report.json"
+OLLAMA_API_URL = "http://localhost:11434/api/generate"
+MODEL_NAME = "llama3"  # 或 mistral，取決於您安裝的模型
 
-def generate_moltbot_prompt(report):
-    timestamp = report.get("timestamp", datetime.now().isoformat())
-    data_source = report.get("data_source", "Unknown")
-    analysis = report.get("analysis", {})
+def load_report():
+    if not os.path.exists(REPORT_FILE):
+        print(f"❌ Report file not found: {REPORT_FILE}")
+        return None
+    with open(REPORT_FILE, 'r', encoding='utf-8') as f:
+        return json.load(f)
 
-    # 1. 定義角色與任務 (System Prompt)
-    # 我們直接在這邊告訴 Moltbot 它的身分和它要做什麼
-    prompt_content = f"""
-【Moltbot 任務指令書】
-時間: {timestamp}
-來源: {data_source}
+def generate_prompt(data):
+    """將量化數據轉換為 AI 的 Prompt (專業華爾街分析師版)"""
+    
+    # 1. 取得當前日期，增強時效感
+    today_date = datetime.now().strftime("%Y年%m月%d日")
+    
+    # 2. 整理數據摘要
+    summary_text = ""
+    analysis = data.get("analysis", {})
+    
+    for stock, info in analysis.items():
+        price = info.get("current_price")
+        # 處理價格為 None 的情況 (例如抓不到數據)
+        price_str = f"{price:.2f}" if price is not None else "數據缺失 (N/A)"
+        
+        strat_summary = info.get("Summary", "無訊號")
+        
+        # 取得細部策略訊號
+        ma_signal = info.get("strategies", {}).get("Technical_MA", {}).get("signal", "N/A")
+        val_signal = info.get("strategies", {}).get("Fundamental_Valuation", {}).get("signal", "N/A")
+        
+        # 取得關鍵數據 (如果有)
+        ma_data = info.get("strategies", {}).get("Technical_MA", {}).get("data", {})
+        val_data = info.get("strategies", {}).get("Fundamental_Valuation", {}).get("data", {})
+        
+        summary_text += f"""
+        ---
+        【股票代號】: {stock}
+        【目前股價】: {price_str}
+        【技術面訊號 (均線策略)】: {ma_signal} (MA5 vs MA20)
+        【基本面訊號 (估值策略)】: {val_signal} (PB Ratio: {val_data.get('PB_Ratio', 'N/A')})
+        【策略綜合摘要】: {strat_summary}
+        """
 
-角色設定：
-你是一位專業的華爾街量化分析師。你的任務是閱讀下方的「原始交易數據」，並撰寫一份高品質的「投資日報」。
+    # 3. 建構強力 Prompt
+    prompt = f"""
+    [System Role]:
+    你現在是華爾街頂尖的量化交易分析師 (Senior Quant Analyst)。
+    你的風格是：專業、客觀、數據導向，且嚴格使用「繁體中文 (Traditional Chinese)」撰寫報告。
 
-任務目標：
-請根據數據，將分析結果寫入到一個新的 Markdown 檔案中，檔名請命名為 `reports/daily_summary_{datetime.now().strftime('%Y%m%d')}.md`。
+    [Context]:
+    今天是 {today_date}。
+    我將提供你一份最新的量化模型運算數據（JSON Parser Output）。
+    這些數據是我們內部系統剛剛生成的最新結果。
 
-分析報告結構要求：
-1. **市場情緒速覽**：根據所有股票的訊號給出整體評分 (1-10分)。
-2. **個股深度掃描**：
-   - 重點分析訊號發生衝突的股票 (如: 技術面看多但基本面看空)。
-   - 特別關注清單中的 2330.TW (台積電), 2317.TW (鴻海)。
-3. **行動建議**：明確列出今天適合「買進」、「賣出」或「觀望」的標的。
+    [Input Data]:
+    {summary_text}
 
---- [以下是原始數據 JSON] ---
-{json.dumps(analysis, indent=2, ensure_ascii=False)}
-"""
-    return prompt_content
+    [Task]:
+    請根據上述數據，撰寫一份《今日量化投資日報》。
+    
+    [Output Requirements]:
+    1. **語言限制**：必須全程使用流暢的「繁體中文」。
+    2. **標題**：請使用吸引人的財經日報標題。
+    3. **個股點評**：
+       - 對每一檔股票進行分析。
+       - 如果訊號是 "HOLD"，請解釋為「觀望」或「趨勢不明」，並建議耐心等待。
+       - 如果訊號是 "BUY" 或 "SELL"，請強調這是基於技術面還是基本面。
+       - 對於「數據缺失」的股票 (如 N/A)，請務必提出風險警示 (Risk Warning)。
+    4. **美股與台股區分**：請在分析中自然地識別出哪些是台股 (代號有 .TW/.TWO)，哪些是美股 (如 NVDA, CMCSA)。
+    5. **總結建議**：給出一個整體的市場操作建議 (保守/積極/觀望)。
+
+    [Response Start]:
+    """
+    return prompt
+
+def call_ollama(prompt):
+    print("🤖 AI 分析師正在撰寫日報... (正在思考中)")
+    
+    payload = {
+        "model": MODEL_NAME,
+        "prompt": prompt,
+        "stream": False
+    }
+    
+    try:
+        response = requests.post(OLLAMA_API_URL, json=payload)
+        response.raise_for_status()
+        result = response.json()
+        return result['response']
+    except Exception as e:
+        return f"❌ Error calling Ollama: {e}"
 
 def main():
-    # 檢查 JSON 是否存在
-    if not os.path.exists(INPUT_JSON):
-        print(f"❌ 錯誤: 找不到 {INPUT_JSON}。請先執行 main.py！")
+    # 1. 讀取報告
+    report_data = load_report()
+    if not report_data:
         return
 
-    # 讀取 JSON
-    with open(INPUT_JSON, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    # 生成給 Moltbot 的指令內容
-    mission_text = generate_moltbot_prompt(data)
-
-    # 寫入文字檔 (這就是 File-based Handoff)
-    with open(OUTPUT_MISSION, "w", encoding="utf-8") as f:
-        f.write(mission_text)
-
-    print("="*60)
-    print(f"✅ Moltbot 任務簡報已生成！路徑: {OUTPUT_MISSION}")
-    print("接下來請開啟 Moltbot 並輸入指令：")
-    print(f'👉 "Please read {os.path.abspath(OUTPUT_MISSION)} and execute the instructions inside."')
-    print("="*60)
+    # 2. 生成 Prompt
+    prompt = generate_prompt(report_data)
+    
+    # 3. 呼叫 AI
+    ai_reply = call_ollama(prompt)
+    
+    # 4. 輸出結果
+    print("\n" + "="*50)
+    print(ai_reply)
+    print("="*50 + "\n")
 
 if __name__ == "__main__":
     main()

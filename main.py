@@ -5,15 +5,15 @@ from data.data_loader import get_data_provider
 from strategies.ma_crossover import MACrossoverStrategy
 from strategies.valuation_strategy import ValuationStrategy
 
-# 配置
-TARGET_STOCKS = ["2330.TW", "2888.TW", "2317.TW"]
-DATA_SOURCE = "yfinance"  # 未來只需改成 "finmind"
+# === 設定區 ===
+TARGET_STOCKS = ["2330.TW", "3141.TWO", "NVDA","CMCSA" ]
+DATA_SOURCE = "yfinance"  # 可以在此切換 'finmind'
 OUTPUT_FILE = "data/latest_report.json"
 
 def main():
-    print(f"=== Starting Quant Engine (Source: {DATA_SOURCE}) ===")
+    print(f"🚀 Starting Quant Analysis using source: [{DATA_SOURCE}]...")
     
-    # 1. 初始化 Data Provider (Adapter Pattern)
+    # 1. 取得數據驅動器 (Adapter Pattern)
     provider = get_data_provider(DATA_SOURCE)
     
     # 2. 初始化策略
@@ -22,45 +22,46 @@ def main():
         "Fundamental_Valuation": ValuationStrategy()
     }
     
-    report = {
+    final_report = {
         "timestamp": datetime.now().isoformat(),
-        "data_source": DATA_SOURCE,
+        "source": DATA_SOURCE,
         "analysis": {}
     }
 
-    # 3. 執行迴圈
+    # 3. 掃描每一檔股票
     for stock_id in TARGET_STOCKS:
-        print(f"\nProcessing {stock_id}...")
+        print(f"Analyzing {stock_id}...")
         
-        # 獲取數據
-        df = provider.get_history(stock_id)
+        # A. 透過轉接頭獲取數據 (這就是解耦的關鍵！)
+        df_history = provider.get_history(stock_id)
         fundamentals = provider.get_fundamentals(stock_id)
         
         stock_result = {
-            "price_data": {
-                "latest_close": df['Close'].iloc[-1] if not df.empty else None
-            },
+            "current_price": None,
             "strategies": {}
         }
 
-        # 執行所有策略
-        for name, strat in strategies.items():
-            try:
-                result = strat.analyze(df, extra_data=fundamentals)
-                stock_result["strategies"][name] = result
-                print(f"   -> {name}: {result['signal']} ({result['reason']})")
-            except Exception as e:
-                print(f"   -> {name} Failed: {e}")
-                stock_result["strategies"][name] = {"error": str(e)}
+        if not df_history.empty:
+            stock_result["current_price"] = float(df_history['Close'].iloc[-1])
 
-        report["analysis"][stock_id] = stock_result
+        # B. 執行策略
+        summary_reasons = []
+        for strat_name, strategy in strategies.items():
+            result = strategy.analyze(df_history, extra_data=fundamentals)
+            stock_result["strategies"][strat_name] = result
+            
+            if result['signal'] != 'HOLD':
+                summary_reasons.append(f"[{strat_name}] {result['signal']}")
 
-    # 4. 輸出 JSON 報告
+        stock_result["Summary"] = "; ".join(summary_reasons) if summary_reasons else "Wait and See"
+        final_report["analysis"][stock_id] = stock_result
+
+    # 4. 存檔
     os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=4, ensure_ascii=False)
+    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
+        json.dump(final_report, f, indent=2, ensure_ascii=False)
     
-    print(f"\n=== Analysis Complete. Report saved to {OUTPUT_FILE} ===")
+    print(f"✅ Analysis complete. Report saved to {OUTPUT_FILE}")
 
 if __name__ == "__main__":
     main()

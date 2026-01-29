@@ -1,12 +1,15 @@
-import pandas as pd
 import yfinance as yf
+import pandas as pd
 from abc import ABC, abstractmethod
 
-# 抽象基類 (介面)
 class DataProvider(ABC):
+    """
+    抽象基類 (Abstract Base Class)
+    定義所有數據提供者必須遵守的規格。
+    """
     @abstractmethod
     def get_history(self, stock_id: str, period: str = "1y") -> pd.DataFrame:
-        """回傳包含 Open, High, Low, Close, Volume 的 DataFrame"""
+        """回傳標準化的 OHLCV DataFrame"""
         pass
 
     @abstractmethod
@@ -14,56 +17,69 @@ class DataProvider(ABC):
         """回傳基本面數據字典"""
         pass
 
-# 具體實作: Yahoo Finance
 class YFinanceProvider(DataProvider):
+    """
+    具體實作：使用 Yahoo Finance (Free)
+    """
     def get_history(self, stock_id: str, period: str = "1y") -> pd.DataFrame:
-        print(f"   [Data] Fetching history for {stock_id} from yfinance...")
         try:
-            # yfinance 最近更新後，回傳格式可能包含 MultiIndex，需做處理
+            # yfinance 下載
             df = yf.download(stock_id, period=period, progress=False)
-            if df.empty:
-                return pd.DataFrame()
             
-            # 確保欄位扁平化 (若有 MultiIndex)
+            if df.empty:
+                print(f"Warning: No price data found for {stock_id}")
+                return pd.DataFrame()
+
+            # 處理 MultiIndex (針對新版 yfinance)
             if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-                
-            return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+                try:
+                    df = df.xs(stock_id, level=1, axis=1)
+                except:
+                    df.columns = df.columns.get_level_values(0)
+
+            # 重新命名以符合標準
+            required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+            # 簡單檢查，若欄位不足直接回傳以免報錯
+            if not all(col in df.columns for col in required_cols):
+                return df 
+            
+            return df[required_cols]
+            
         except Exception as e:
-            print(f"   [Error] Download failed for {stock_id}: {e}")
+            print(f"Error fetching history for {stock_id}: {e}")
             return pd.DataFrame()
 
     def get_fundamentals(self, stock_id: str) -> dict:
-        print(f"   [Data] Fetching fundamentals for {stock_id}...")
         try:
             ticker = yf.Ticker(stock_id)
             info = ticker.info
-            # 這裡只提取我們需要的關鍵數據，並處理可能的 None
+            # 取得關鍵基本面數據
             return {
-                "pb_ratio": info.get("priceToBook"),
-                "pe_ratio": info.get("trailingPE"),
-                "market_cap": info.get("marketCap"),
-                "currency": info.get("currency")
+                "priceToBook": info.get("priceToBook"),
+                "trailingPE": info.get("trailingPE"),
+                "marketCap": info.get("marketCap"),
+                "sector": info.get("sector"),
+                "dividendYield": info.get("dividendYield")
             }
         except Exception as e:
-            print(f"   [Error] Fundamentals failed for {stock_id}: {e}")
+            print(f"Error fetching fundamentals for {stock_id}: {e}")
             return {}
 
-# 具體實作: FinMind (預留骨架)
 class FinMindProvider(DataProvider):
+    """
+    預留實作：未來對接 FinMind
+    """
     def get_history(self, stock_id: str, period: str = "1y") -> pd.DataFrame:
-        print(f"   [Data] Would fetch from FinMind for {stock_id}")
-        # TODO: Implement FinMind API call here
+        print(f"[Placeholder] Fetching from FinMind for {stock_id}...")
         return pd.DataFrame()
 
     def get_fundamentals(self, stock_id: str) -> dict:
         return {}
 
-# 工廠函數
-def get_data_provider(source_name: str = 'yfinance') -> DataProvider:
-    if source_name.lower() == 'yfinance':
-        return YFinanceProvider()
-    elif source_name.lower() == 'finmind':
-        return FinMindProvider()
-    else:
-        raise ValueError(f"Unknown data source: {source_name}")
+def get_data_provider(source_name: str = "yfinance") -> DataProvider:
+    """工廠函數：切換數據源"""
+    drivers = {
+        "yfinance": YFinanceProvider(),
+        "finmind": FinMindProvider(),
+    }
+    return drivers.get(source_name, YFinanceProvider())
