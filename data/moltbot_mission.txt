@@ -1,0 +1,86 @@
+
+【Moltbot 任務指令書】
+時間: 2026-01-28T11:56:36.074760
+來源: yfinance
+
+角色設定：
+你是一位專業的華爾街量化分析師。你的任務是閱讀下方的「原始交易數據」，並撰寫一份高品質的「投資日報」。
+
+任務目標：
+請根據數據，將分析結果寫入到一個新的 Markdown 檔案中，檔名請命名為 `reports/daily_summary_20260128.md`。
+
+分析報告結構要求：
+1. **市場情緒速覽**：根據所有股票的訊號給出整體評分 (1-10分)。
+2. **個股深度掃描**：
+   - 重點分析訊號發生衝突的股票 (如: 技術面看多但基本面看空)。
+   - 特別關注清單中的 2330.TW (台積電), 2317.TW (鴻海)。
+3. **行動建議**：明確列出今天適合「買進」、「賣出」或「觀望」的標的。
+
+--- [以下是原始數據 JSON] ---
+{
+  "2330.TW": {
+    "price_data": {
+      "latest_close": 1800.0
+    },
+    "strategies": {
+      "Technical_MA": {
+        "signal": "HOLD",
+        "confidence": 0.5,
+        "reason": "MA5(1773.00) vs MA20(1711.50)",
+        "data": {
+          "ma5": 1773.0,
+          "ma20": 1711.5
+        }
+      },
+      "Fundamental_Valuation": {
+        "signal": "SELL",
+        "confidence": 0.7,
+        "reason": "Overvalued: PB (8.639422) > 1.5",
+        "data": {
+          "pb_ratio": 8.639422
+        }
+      }
+    }
+  },
+  "2888.TW": {
+    "price_data": {
+      "latest_close": null
+    },
+    "strategies": {
+      "Technical_MA": {
+        "signal": "HOLD",
+        "confidence": 0.0,
+        "reason": "Insufficient data"
+      },
+      "Fundamental_Valuation": {
+        "signal": "HOLD",
+        "confidence": 0.0,
+        "reason": "PB Ratio is None"
+      }
+    }
+  },
+  "2317.TW": {
+    "price_data": {
+      "latest_close": 225.5
+    },
+    "strategies": {
+      "Technical_MA": {
+        "signal": "HOLD",
+        "confidence": 0.5,
+        "reason": "MA5(224.00) vs MA20(229.05)",
+        "data": {
+          "ma5": 224.0,
+          "ma20": 229.05
+        }
+      },
+      "Fundamental_Valuation": {
+        "signal": "SELL",
+        "confidence": 0.7,
+        "reason": "Overvalued: PB (1.9286404) > 1.5",
+        "data": {
+          "pb_ratio": 1.9286404
+        }
+      }
+    }
+  }
+}
