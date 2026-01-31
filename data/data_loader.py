@@ -1,108 +1,122 @@
 import pandas as pd
-from FinMind.data import DataLoader as FinMindLoader
+import yfinance as yf
+try:
+    from FinMind.data import DataLoader as FinMindLoader
+except ImportError:
+    FinMindLoader = None
+
+from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 
-class DataLoader:
-    def __init__(self, token=None):
-        self.fm = FinMindLoader()
-        self.token = token
-        if self.token:
-            self.fm.login_by_token(api_token=self.token)
+# ==========================================
+# 1. 定義標準介面
+# ==========================================
+class BaseDataProvider(ABC):
+    @abstractmethod
+    def fetch_history(self, ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
+        pass
 
-    def fetch_data(self, ticker: str, start_date: str = None, end_date: str = None) -> pd.DataFrame:
-        """
-        從 FinMind 獲取台股價量與籌碼數據 (具備容錯機制)
-        """
-        # 1. 處理日期預設值
-        if not end_date:
-            end_date = datetime.now().strftime("%Y-%m-%d")
-        if not start_date:
-            start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+# ==========================================
+# 2. FinMind 來源 (Primary)
+# ==========================================
+class FinMindProvider(BaseDataProvider):
+    def __init__(self, api_token=None):
+        if FinMindLoader:
+            self.loader = FinMindLoader()
+            if api_token:
+                self.loader.login_by_token(api_token=api_token)
+        else:
+            self.loader = None
+            print("⚠️ FinMind package not installed. Skipping.")
 
-        # 2. 處理代碼格式 (移除 .TW)
-        clean_ticker = ticker.replace(".TW", "").replace(".TWO", "")
-        print(f"📥 正在從 FinMind 下載 {clean_ticker} 數據 ({start_date} ~ {end_date})...")
-
-        df_price = pd.DataFrame()
+    def fetch_history(self, ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
+        if not self.loader: return None
         
-        # --- A. 抓取股價 (Price) ---
+        # 移除 .TW (FinMind 格式)
+        stock_id = ticker.split('.')[0]
+        print(f"   [FinMind] Fetching {stock_id}...")
+        
         try:
-            df_price = self.fm.taiwan_stock_daily(
-                stock_id=clean_ticker,
+            df = self.loader.taiwan_stock_daily(
+                stock_id=stock_id,
                 start_date=start_date,
                 end_date=end_date
             )
-            if df_price.empty:
-                print(f"⚠️ 警告: 找不到 {clean_ticker} 的股價數據")
-                return pd.DataFrame()
+            if df.empty: return None
 
-            # 整理股價 DataFrame
-            df_price['date'] = pd.to_datetime(df_price['date'])
-            df_price = df_price.rename(columns={
-                'Trading_Volume': 'Volume',
-                'close': 'Close',
-                'open': 'Open',
-                'max': 'High',
-                'min': 'Low',
+            df = df.rename(columns={
+                'date': 'date', 'open': 'open', 'max': 'high', 
+                'min': 'low', 'close': 'close', 'Trading_Volume': 'volume'
             })
-            df_price = df_price.set_index('date')
-            
-            # 確保數據是數值型態
-            cols_to_numeric = ['Open', 'High', 'Low', 'Close', 'Volume']
-            df_price[cols_to_numeric] = df_price[cols_to_numeric].apply(pd.to_numeric, errors='coerce')
-
+            cols = ['open', 'high', 'low', 'close', 'volume']
+            df[cols] = df[cols].apply(pd.to_numeric, errors='coerce')
+            return df[['date', 'open', 'high', 'low', 'close', 'volume']]
         except Exception as e:
-            print(f"❌ 股價下載失敗: {e}")
-            return pd.DataFrame()
+            print(f"   [FinMind] Error: {e}")
+            return None
 
-        # --- B. 抓取法人籌碼 (Chips) - 獨立 Try-Except (容錯) ---
+# ==========================================
+# 3. yfinance 來源 (Backup)
+# ==========================================
+class YFinanceProvider(BaseDataProvider):
+    def fetch_history(self, ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
+        if ".TW" not in ticker and ".TWO" not in ticker:
+            ticker = f"{ticker}.TW"
+        print(f"   [yfinance] Fetching {ticker}...")
+
         try:
-            df_chips = self.fm.taiwan_stock_institutional_investors(
-                stock_id=clean_ticker,
-                start_date=start_date,
-                end_date=end_date
-            )
+            df = yf.download(ticker, start=start_date, end=end_date, progress=False)
+            if df.empty: return None
             
-            # 檢查是否有資料，且關鍵欄位 'buy_sell' 是否存在
-            if not df_chips.empty and 'buy_sell' in df_chips.columns:
-                df_chips['date'] = pd.to_datetime(df_chips['date'])
-                
-                # 樞紐分析：將 'name' 轉為 columns
-                pivot_chips = df_chips.pivot_table(
-                    index='date', 
-                    columns='name', 
-                    values='buy_sell', 
-                    aggfunc='sum'
-                ).fillna(0)
-                
-                # 合併到主表
-                df_final = df_price.join(pivot_chips, how='left').fillna(0)
-                
-                # 重新命名欄位 (標準化)
-                mapping = {
-                    'Foreign_Investor': 'Institutional_Foreign', # 外資
-                    'Investment_Trust': 'Institutional_Trust',   # 投信
-                    'Dealer_Self_Analysis': 'Institutional_Dealer' # 自營商
-                }
-                df_final = df_final.rename(columns=mapping)
-                print(f"✅ 成功下載 {len(df_final)} 筆交易數據 (含籌碼)")
-                return df_final
+            df = df.reset_index()
+            # 處理 MultiIndex 欄位
+            if isinstance(df.columns, pd.MultiIndex):
+                try: df.columns = df.columns.get_level_values(0)
+                except: pass
 
-            else:
-                # 如果籌碼有問題 (例如缺少欄位)，只印警告但不中斷程式
-                if not df_chips.empty:
-                    print(f"⚠️ 籌碼數據欄位異常 (Available: {df_chips.columns.tolist()})，僅使用股價分析。")
-                else:
-                    print("⚠️ 無籌碼數據，僅使用股價分析。")
-                return df_price
+            df.columns = [c.lower() for c in df.columns]
+            if 'date' not in df.columns and 'datetime' in df.columns:
+                 df = df.rename(columns={'datetime': 'date'})
 
+            df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+            return df[['date', 'open', 'high', 'low', 'close', 'volume']]
         except Exception as e:
-            # 籌碼下載發生任何其他錯誤，也不要讓程式崩潰
-            print(f"⚠️ 籌碼下載失敗 ({e})，僅使用股價分析。")
-            return df_price
+            print(f"   [yfinance] Error: {e}")
+            return None
 
-# 測試區塊
-if __name__ == "__main__":
-    loader = DataLoader()
-    df = loader.fetch_data("2330", "2024-01-01", "2024-01-10")
-    print(df.tail())
+# ==========================================
+# 4. 統一數據管理器 (Manager)
+# ==========================================
+class UnifiedDataManager:
+    def __init__(self, finmind_token=None):
+        self.providers = [
+            FinMindProvider(api_token=finmind_token),
+            YFinanceProvider()
+        ]
+
+    def get_data(self, ticker: str, days: int = 100) -> pd.DataFrame:
+        """
+        整合邏輯：自動切換來源，並統一回傳格式
+        """
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+        
+        for provider in self.providers:
+            df = provider.fetch_history(ticker, start_date, end_date)
+            if df is not None and not df.empty:
+                print(f"✅ Data loaded via {provider.__class__.__name__}")
+                # 統一格式供策略使用
+                df['Date'] = pd.to_datetime(df['date'])
+                df = df.set_index('Date')
+                df = df.rename(columns={
+                    'open': 'Open', 'high': 'High', 'low': 'Low', 
+                    'close': 'Close', 'volume': 'Volume'
+                })
+                return df
+                
+        print(f"❌ All providers failed for {ticker}")
+        return pd.DataFrame()
+    
+    def get_institutional_data(self, stock_id: str) -> dict:
+        # 暫時回傳 None，避免爬蟲錯誤
+        return {"foreign": None, "trust": None, "dealer": None}

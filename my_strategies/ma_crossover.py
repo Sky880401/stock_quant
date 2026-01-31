@@ -1,46 +1,59 @@
+# 修改 strategies/ma_crossover.py
+
+import talib
+import numpy as np # 確保引入 numpy
 from .base_strategy import BaseStrategy
-import pandas as pd
 
 class MACrossoverStrategy(BaseStrategy):
-    # 👇 關鍵修正：加入 __init__ 來接收參數
-    def __init__(self, short_window=5, long_window=20):
-        self.short_window = short_window
-        self.long_window = long_window
+    def analyze(self, df, extra_data=None):
+        if df is None or len(df) < 60: # 修正：至少要有 60 根 K 線才能算 MA60
+            return {"signal": "HOLD", "confidence": 0.0, "reason": "Insufficient data (Need >60 bars)"}
 
-    def analyze(self, df: pd.DataFrame) -> dict:
-        # 複製一份數據以免動到原始資料
-        data = df.copy()
-        
-        # 計算移動平均線
-        data['SMA_Short'] = data['Close'].rolling(window=self.short_window).mean()
-        data['SMA_Long'] = data['Close'].rolling(window=self.long_window).mean()
-        
-        # 取得最後兩筆數據來判斷交叉
-        if len(data) < self.long_window:
-            return {"signal": "HOLD", "confidence": 0, "reason": "數據不足"}
+        close_prices = df['Close'].values
+        high_prices = df['High'].values
+        low_prices = df['Low'].values
 
-        last_close = data.iloc[-1]
-        prev_close = data.iloc[-2]
+        # 1. 擴充技術指標 (增加 MA60 與 ATR)
+        ma5 = talib.SMA(close_prices, timeperiod=5)
+        ma20 = talib.SMA(close_prices, timeperiod=20)
+        ma60 = talib.SMA(close_prices, timeperiod=60) # 新增季線
+        atr = talib.ATR(high_prices, low_prices, close_prices, timeperiod=14) # 新增 ATR 用於計算止損
+
+        # 取得最新值
+        curr_price = close_prices[-1]
+        latest_ma5 = ma5[-1]
+        latest_ma20 = ma20[-1]
+        latest_ma60 = ma60[-1]
+        latest_atr = atr[-1]
+
+        # 2. 優化邏輯 (黃金交叉 + 均線排列)
+        signal = "HOLD"
+        reason = "Consolidation"
         
-        # 黃金交叉 (短線向上突破長線)
-        if prev_close['SMA_Short'] <= prev_close['SMA_Long'] and last_close['SMA_Short'] > last_close['SMA_Long']:
-            return {
-                "signal": "BUY",
-                "confidence": 80,
-                "reason": f"黃金交叉 (MA{self.short_window} > MA{self.long_window})"
+        # 簡單判斷：均線多頭排列
+        if latest_ma5 > latest_ma20 > latest_ma60:
+            signal = "BUY"
+            reason = "Bullish Alignment (MA5 > MA20 > MA60)"
+        elif latest_ma5 < latest_ma20 < latest_ma60:
+            signal = "SELL"
+            reason = "Bearish Alignment (MA5 < MA20 < MA60)"
+        
+        # 3. 計算建議止損與目標價 (讓 AI 有數據可以寫)
+        stop_loss = curr_price - (2.0 * latest_atr) if signal == "BUY" else curr_price + (2.0 * latest_atr)
+        target_price = curr_price + (3.0 * latest_atr) if signal == "BUY" else curr_price - (3.0 * latest_atr)
+
+        return {
+            "signal": signal,
+            "confidence": 0.8,
+            "reason": reason,
+            # 關鍵：這裡傳出的數據越豐富，AI 寫的報告越準
+            "data": {
+                "close": float(curr_price),
+                "ma5": float(latest_ma5),
+                "ma20": float(latest_ma20),
+                "ma60": float(latest_ma60),
+                "atr": float(latest_atr),
+                "suggested_stop": float(stop_loss),
+                "suggested_target": float(target_price)
             }
-            
-        # 死亡交叉 (短線向下跌破長線)
-        elif prev_close['SMA_Short'] >= prev_close['SMA_Long'] and last_close['SMA_Short'] < last_close['SMA_Long']:
-            return {
-                "signal": "SELL",
-                "confidence": 80,
-                "reason": f"死亡交叉 (MA{self.short_window} < MA{self.long_window})"
-            }
-            
-        else:
-            return {
-                "signal": "HOLD",
-                "confidence": 50,
-                "reason": "無交叉訊號"
-            }
+        }

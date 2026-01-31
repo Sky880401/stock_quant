@@ -1,97 +1,71 @@
 import json
 import os
-from datetime import datetime, timedelta
-from data.data_loader import DataLoader 
-# 👇 修改這裡：從 my_strategies 匯入
-from my_strategies.ma_crossover import MACrossoverStrategy
-from my_strategies.valuation_strategy import ValuationStrategy
+from datetime import datetime
+from data.data_loader import UnifiedDataManager  # 確保這裡不會報錯
+from strategies.ma_crossover import MACrossoverStrategy
 
-# 設定要分析的股票
-TICKERS = ["2330.TW"] 
+# 設定
+TARGET_STOCKS = ["2330.TW", "2317.TW"]
+OUTPUT_FILE = "data/latest_report.json"
+FINMIND_TOKEN = "" 
 
 def main():
-    print("🚀 啟動量化分析主程序...")
+    print(f"=== Starting Hybrid Quant Engine ===")
     
-    # 初始化 FinMind 數據載入器
-    loader = DataLoader()
+    # 這裡會初始化剛剛定義的類別
+    provider = UnifiedDataManager(finmind_token=FINMIND_TOKEN)
+    strategy = MACrossoverStrategy()
+    
+    report = {
+        "timestamp": datetime.now().isoformat(),
+        "analysis": {}
+    }
 
-    # 初始化策略
-    strategies = [
-        MACrossoverStrategy(short_window=5, long_window=20),
-        ValuationStrategy(threshold=0.8) 
-    ]
-
-    final_report = []
-
-    for ticker in TICKERS:
-        print(f"\n🔍 分析標的: {ticker}")
+    for stock_id in TARGET_STOCKS:
+        print(f"\nProcessing {stock_id}...")
         
-        # 設定日期範圍 (過去一年)
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=365)
+        # 呼叫 get_data (只需傳入 stock_id 與天數)
+        df = provider.get_data(stock_id, days=120)
         
-        # 下載數據
-        df = loader.fetch_data(
-            ticker=ticker, 
-            start_date=start_date.strftime("%Y-%m-%d"), 
-            end_date=end_date.strftime("%Y-%m-%d")
-        )
-
-        if df.empty:
-            print(f"⚠️ 無法取得 {ticker} 數據，跳過分析。")
+        if df is None or df.empty:
+            print(f"   Skipping {stock_id} (No Data)")
             continue
 
-        # 執行策略分析
-        ticker_result = {
-            "symbol": ticker,
-            "timestamp": datetime.now().isoformat(),
-            "strategies": {}
-        }
+        chips = provider.get_institutional_data(stock_id)
 
-        # 整合訊號
-        bullish_votes = 0
-        bearish_votes = 0
-
-        for strategy in strategies:
+        try:
             result = strategy.analyze(df)
-            strategy_name = strategy.__class__.__name__
-            ticker_result["strategies"][strategy_name] = result
             
-            print(f"   👉 {strategy_name}: {result['signal']} (信心: {result.get('confidence', 'N/A')})")
+            stock_data = {
+                "price_data": {
+                    "latest_close": float(df['Close'].iloc[-1]),
+                    "volume": int(df['Volume'].iloc[-1])
+                },
+                "institutional_data": chips,
+                "strategies": {
+                    "Technical_MA": result
+                }
+            }
+            report["analysis"][stock_id] = stock_data
+            print(f"   -> Signal: {result['signal']}")
+            
+        except Exception as e:
+            print(f"   -> Error: {e}")
 
-            if result['signal'] == 'BUY':
-                bullish_votes += 1
-            elif result['signal'] == 'SELL':
-                bearish_votes += 1
-
-        # 產生綜合結論
-        if bullish_votes > bearish_votes:
-            final_signal = "BUY"
-        elif bearish_votes > bullish_votes:
-            final_signal = "SELL"
-        else:
-            final_signal = "HOLD"
-
-        ticker_result["final_signal"] = final_signal
-        
-        # 補充最新價格資訊
-        latest_data = df.iloc[-1]
-        ticker_result["market_data"] = {
-            "close": float(latest_data["Close"]),
-            "volume": int(latest_data["Volume"]),
-            "foreign_buy": int(latest_data.get("Institutional_Foreign", 0))
-        }
-        
-        final_report.append(ticker_result)
-
-    # 輸出結果
-    output_path = "data/latest_report.json"
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=4, ensure_ascii=False)
     
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(final_report, f, indent=4, ensure_ascii=False)
-        
-    print(f"\n✅ 分析完成！結果已儲存至 {output_path}")
+    print(f"\n=== Report generated: {OUTPUT_FILE} ===")
+
+    # 嘗試生成 AI Prompt
+    try:
+        from ai_runner import generate_moltbot_prompt
+        with open("data/moltbot_mission.txt", "w", encoding="utf-8") as f:
+            f.write(generate_moltbot_prompt(report))
+        print("✅ AI Mission Prompt updated.")
+    except Exception as e:
+        print(f"⚠️ Prompt generation skipped: {e}")
 
 if __name__ == "__main__":
     main()
