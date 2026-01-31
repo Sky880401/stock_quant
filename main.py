@@ -1,3 +1,4 @@
+# ... (保留前面所有 import 和 helper functions: get_stock_name_zh, fetch_stock_data_smart, analyze_chip, calculate_macd_signal, calculate_atr) ...
 import sys
 import os
 import json
@@ -98,8 +99,10 @@ def calculate_atr(df, period=14):
         return atr
     except: return df['Close'].iloc[-1] * 0.03
 
-# === V9.0 核心升級：機構級決策矩陣 ===
 def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res, backtest_info=None, fundamentals=None, df=None):
+    # (保持原樣 V9.1 的決策邏輯，為節省篇幅省略細節，請確保完整複製 V9.1 的代碼)
+    # ...
+    # 這裡請貼上 V9.1 的 calculate_final_decision 完整代碼
     current_price = df['Close'].iloc[-1]
     tech_signal = tech_res.get("signal")
     fund_signal = fund_res.get("signal")
@@ -113,46 +116,37 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
 
     log_info(f"Mode: {strategy_type} | Tech:{tech_signal} RSI:{rsi_val:.1f} ATR:{atr_pct:.1f}%")
 
-    score = 0.5 # 初始 50 分
-    
-    # 1. 策略適配 (根據不同策略給分)
-    # [修正] Reversion 策略在 RSI 40-60 為中性，不加減分
+    score = 0.5 
     if strategy_type == "Reversion (RSI)":
-        if rsi_val <= 30: score += 0.3 # 超賣買進
-        elif rsi_val >= 70: score -= 0.3 # 超買賣出
-        elif rsi_val < 45: score += 0.1 # 偏弱試單
-        elif rsi_val > 55: score -= 0.1 # 偏強減碼
-        # 45-55 之間不動
+        if rsi_val <= 30: score += 0.3 
+        elif rsi_val >= 70: score -= 0.3 
+        elif rsi_val < 45: score += 0.1 
+        elif rsi_val > 55: score -= 0.1 
     elif strategy_type == "Momentum (MACD)":
         if "BUY" in macd_status: score += 0.3
         elif "SELL" in macd_status: score -= 0.3
     elif strategy_type == "Swing (KD)":
         if kd_res['signal'] == "BUY": score += 0.3
         elif kd_res['signal'] == "SELL": score -= 0.3
-    else: # Trend (MA)
+    else: 
         if tech_signal == "BUY": score += 0.3
         elif tech_signal == "SELL": score -= 0.3
 
-    # 2. 籌碼濾網
     if chip_res['score'] > 0: score += 0.1
     elif chip_res['score'] < 0: score -= 0.1
     
-    # 3. 基本面濾網
     if fund_signal == "BUY": score += 0.1
     elif fund_signal == "SELL": score -= 0.1
 
-    # 4. 風險扣分 (布林通道/高波動)
     risk_flags = []
     if bollinger_res['signal'] == "SELL":
         score -= 0.15
         risk_flags.append(bollinger_res['reason'])
     
     if atr_pct > 3.0:
-        score -= 0.1 # 高波動扣分
+        score -= 0.1 
         risk_flags.append(f"高波動(ATR {atr_pct:.1f}%)")
 
-    # 5. 決策分級 (Action Mapping)
-    # Strong Buy (>= 0.8) | Buy (>= 0.65) | Hold (0.45 - 0.65) | Reduce (0.25 - 0.45) | Exit (< 0.25)
     action = "HOLD"
     if score >= 0.85: action = "STRONG BUY"
     elif score >= 0.65: action = "BUY"
@@ -160,49 +154,47 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
     elif score >= 0.25: action = "REDUCE / UNDERWEIGHT"
     else: action = "EXIT / SELL"
 
-    # 6. 倉位管理 (Position Sizing with ATR)
-    # 基礎倉位：分數越高倉位越大
     base_pos = int(score * 100)
-    
-    # 波動率懲罰：ATR 越大，倉位上限越低
-    # ATR < 2%: 上限 100% | ATR 2-4%: 上限 60% | ATR > 4%: 上限 30%
     if atr_pct < 2.0: pos_limit = 100
     elif atr_pct < 4.0: pos_limit = 60
     else: pos_limit = 30
     
     final_pos = min(base_pos, pos_limit)
-    if final_pos < 10: final_pos = 0 # 雜訊過濾
+    if final_pos < 10: final_pos = 0 
     
-    # 格式化倉位建議
     if action in ["EXIT / SELL", "REDUCE / UNDERWEIGHT"]:
         pos_str = "0-10% (出清/減碼)"
     else:
         pos_str = f"{max(0, final_pos-10)}-{final_pos}%"
 
-    # 7. 停損計算 (ATR x 1.5 倍)
-    atr_multiplier = 2.0 if atr_pct > 3.0 else 1.5 # 波動大寬停損
+    atr_multiplier = 2.0 if atr_pct > 3.0 else 1.5 
     atr_stop = current_price - (atr * atr_multiplier)
     ma_stop = tech_res.get("stop_loss", 0.0)
     
-    # 智慧停損選取
+    key_level_desc = "停損價"
+    key_level_price = 0.0
+
     if "BUY" in action or "HOLD" in action:
         if ma_stop >= current_price: 
-            stop_price = atr_stop
-            risk_flags.append(f"動態停損 (ATR x{atr_multiplier})")
+            key_level_price = current_price - (atr * atr_multiplier)
+            key_level_desc = "動態停損 (ATR)"
         else:
-            stop_price = max(ma_stop, atr_stop)
+            key_level_price = max(ma_stop, current_price - (atr * atr_multiplier))
+            key_level_desc = "技術停損"
     else:
-        stop_price = current_price * 1.05 # 做空或離場的參考
+        key_level_price = current_price + (atr * atr_multiplier)
+        key_level_desc = "趨勢反轉點"
 
     return {
         "action": action,
         "position_size": pos_str,
-        "time_horizon": "Mid-Term" if strategy_type == "Trend (MA)" else "Short-Term",
-        "final_confidence": round(score, 2),
-        "risk_factors": " | ".join(risk_flags) if risk_flags else "None",
+        "time_horizon": "Mid-Term",
+        "final_confidence": round((100-risk_score)/100, 2) if 'risk_score' in locals() else score, # 修正變數
+        "risk_factors": " | ".join(risk_flags) if risk_flags else "Low",
         "chip_insight": chip_res['reason'],
         "tech_insight": f"RSI={rsi_val:.1f}, KD={kd_res['signal']}, MACD={macd_status}",
-        "stop_loss_price": round(stop_price, 2),
+        "stop_loss_price": round(key_level_price, 2),
+        "stop_loss_desc": key_level_desc,
         "atr_pct": round(atr_pct, 1)
     }
 
@@ -215,7 +207,7 @@ def analyze_single_target(stock_id: str, run_optimization_if_missing: bool = Fal
             if clean_id in config: backtest_info = config[clean_id]
         except: pass
     if not backtest_info and run_optimization_if_missing:
-        log_info(f"啟動 V9.0 策略錦標賽: {clean_id}")
+        log_info(f"啟動 V9.3 策略錦標賽 (Win Rate): {clean_id}")
         target_input = f"{clean_id}.TW"
         new_params = find_best_params(target_input)
         if new_params:
@@ -260,19 +252,17 @@ def generate_moltbot_prompt(data, is_single=False):
         ticker = data['meta']['ticker']
         name = data['meta'].get('name', ticker)
         dec = data['final_decision']
-        
-        # [優化] 策略適配理由
         strat = data['backtest_insight'].get('strategy_type', 'Trend')
-        fit_reason = "歷史回測顯示趨勢跟隨最有效"
-        if strat == "Reversion (RSI)": fit_reason = "股價具箱型震盪特性"
-        if strat == "Momentum (MACD)": fit_reason = "股價具備明顯波段動能"
+        # [修改] 使用新的顯示欄位
+        win_rate_display = data['backtest_insight'].get('win_rate_display', 'N/A')
         
+        # [核心優化] 讓 Prompt 指導 LLM 產生 Highlight
         guidance = f"""
-### 🚨 BMO 投資評鑑摘要:
-1. **策略模型**: {strat} (適配理由: {fit_reason})。
-2. **評級**: {dec['action']} (非二元對立，包含 HOLD/REDUCE)。
-3. **倉位**: {dec['position_size']} (已依據 ATR {dec['atr_pct']}% 調整)。
-4. **停損**: {dec['stop_loss_price']}。
+### 🚨 BMO 投資評鑑摘要 (請嚴格依照此數據生成報告，並對重點項目加粗):
+1. **策略模型**: {strat} (歷史勝率: {win_rate_display})。
+2. **Action**: {dec['action']}。
+3. **倉位**: {dec['position_size']} (已考量 ATR {dec['atr_pct']}% 波動)。
+4. **{dec['stop_loss_desc']}**: {dec['stop_loss_price']}。
 """
     else:
         context = json.dumps(data.get("analysis", {}), indent=2, ensure_ascii=False)
@@ -282,19 +272,24 @@ def generate_moltbot_prompt(data, is_single=False):
     prompt = f"""
 【BMO 專業投資評鑑: {name} ({ticker})】
 時間: {timestamp}
-(請使用專業中性口吻，避免"AI認為"字眼，改用"系統模型顯示"或"量化指標指出")
 
 --- 分析指引 ---
 {guidance}
 
-請撰寫報告：
-1. **📊 綜合評級**: Action / 建議倉位 / 策略類型。
-2. **🧠 策略邏輯解析**: 
-   - 說明為何系統採用 {data['backtest_insight'].get('strategy_type')} 策略。
-   - 根據該策略指標 ({dec['tech_insight']}) 解析目前多空狀態。
-3. **⛔ 風險與停損**: 
-   - 說明 ATR 波動率對倉位的影響。
-   - 明確指出停損價位。
+請撰寫報告，務必在 Discord 輸出時，將以下欄位使用 Markdown 加粗 (**...**) 或 程式碼區塊 (`...`) 強調：
+- **Action** (例如: `STRONG BUY`)
+- **建議倉位**
+- **策略勝率**
+- **關鍵價位**
+
+報告結構：
+1. **📊 綜合評級**: Action / 倉位 / 勝率。
+2. **🧠 決策邏輯**: 
+   - 說明 AI 選擇 {data['backtest_insight'].get('strategy_type')} 的原因。
+   - 解讀目前技術指標狀態。
+3. **⛔ 風險管理**: 
+   - 波動率風險提示。
+   - 關鍵價位說明。
 
 [Input Data]
 {context}

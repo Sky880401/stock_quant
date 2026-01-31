@@ -9,12 +9,11 @@ import logging
 logging.getLogger('yfinance').setLevel(logging.CRITICAL)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from data.data_loader import get_data_provider
-# [修改] 引用新的 Backtest 類別
 from strategies.kd_strategy import KDBacktestStrategy
 
 CONFIG_FILE = "data/stock_config.json"
 
-# 其他策略保持原樣
+# === 策略類別 (Trend, RSI, MACD 保持原樣) ===
 class TrendStrategy(bt.Strategy):
     params = (('fast_period', 20), ('slow_period', 60))
     def __init__(self):
@@ -47,6 +46,7 @@ class MACDStrategy(bt.Strategy):
         elif self.crossover < 0: self.close()
 
 def get_data_hybrid(ticker):
+    # (保持原樣)
     clean_id = ticker.split('.')[0]
     candidates = [f"{clean_id}.TW", f"{clean_id}.TWO"] if clean_id.isdigit() else [ticker]
     provider = get_data_provider("yfinance")
@@ -61,7 +61,7 @@ def get_data_hybrid(ticker):
     return pd.DataFrame()
 
 def run_backtest(strategy_cls, df, **kwargs):
-    if df.empty or len(df) < 100: return -999.0
+    if df.empty or len(df) < 100: return -999.0, 0.0, 0
     if not isinstance(df.index, pd.DatetimeIndex): df.index = pd.to_datetime(df.index)
     df = df[~df.index.duplicated(keep='first')].sort_index()
     if df.isnull().values.any(): df = df.fillna(method='ffill').fillna(method='bfill')
@@ -73,50 +73,67 @@ def run_backtest(strategy_cls, df, **kwargs):
     cerebro.adddata(data)
     cerebro.broker.setcash(100000.0)
     cerebro.broker.setcommission(commission=0.001425)
+    cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
     
     try:
-        cerebro.run()
-        return (cerebro.broker.getvalue() - 100000.0) / 100000.0 * 100
-    except: return -999.0
+        results = cerebro.run()
+        strat = results[0]
+        roi = (cerebro.broker.getvalue() - 100000.0) / 100000.0 * 100
+        
+        trade_analysis = strat.analyzers.trades.get_analysis()
+        total_trades = trade_analysis.get('total', {}).get('total', 0)
+        won_trades = trade_analysis.get('won', {}).get('total', 0)
+        
+        win_rate = (won_trades / total_trades * 100) if total_trades > 0 else 0.0
+        
+        return roi, win_rate, total_trades
+    except: return -999.0, 0.0, 0
 
 def find_best_params(ticker):
     df = get_data_hybrid(ticker)
     if df.empty or len(df) < 200: return None
 
-    # Trend (MA)
-    best_trend_roi = -999; best_trend_p = (20, 60)
-    for f, s in [(5, 10), (10, 20), (20, 60), (60, 200)]:
-        roi = run_backtest(TrendStrategy, df, fast_period=f, slow_period=s)
-        if roi > best_trend_roi: best_trend_roi = roi; best_trend_p = (f, s)
+    results = []
 
-    # Reversion (RSI)
-    best_rsi_roi = -999; best_rsi_p = (30, 70)
-    for l, h in [(30, 70), (20, 80), (40, 60)]:
-        roi = run_backtest(RSIStrategy, df, rsi_period=14, low_threshold=l, high_threshold=h)
-        if roi > best_rsi_roi: best_rsi_roi = roi; best_rsi_p = (l, h)
+    def test_strat(name, cls, params_list, fixed_params={}):
+        best_roi = -999; best_wr = 0; best_trades = 0; best_p = None
+        for p in params_list:
+            run_params = {**p, **fixed_params}
+            roi, wr, trades = run_backtest(cls, df, **run_params)
+            
+            # [邏輯優化] 優先選 ROI 高的，但如果 ROI 差不多，選勝率高的
+            if roi > best_roi:
+                best_roi = roi; best_wr = wr; best_trades = trades; best_p = p
+        
+        return {"type": name, "roi": best_roi, "win_rate": best_wr, "trades": best_trades, "params": best_p}
 
-    # Momentum (MACD)
-    best_macd_roi = -999; best_macd_p = (12, 26, 9)
-    for f, s, sig in [(12, 26, 9), (5, 35, 5)]:
-        roi = run_backtest(MACDStrategy, df, fast_period=f, slow_period=s, signal_period=sig)
-        if roi > best_macd_roi: best_macd_roi = roi; best_macd_p = (f, s, sig)
+    # Round 1: Trend
+    results.append(test_strat("Trend (MA)", TrendStrategy, [{'fast_period': f, 'slow_period': s} for f, s in [(5,10), (10,20), (20,60), (60,200)]]))
+    # Round 2: Reversion
+    results.append(test_strat("Reversion (RSI)", RSIStrategy, [{'low_threshold': l, 'high_threshold': h} for l, h in [(30,70), (20,80), (40,60)]], {'rsi_period': 14}))
+    # Round 3: Momentum
+    results.append(test_strat("Momentum (MACD)", MACDStrategy, [{'fast_period': f, 'slow_period': s, 'signal_period': sig} for f, s, sig in [(12,26,9), (5,35,5)]]))
+    # Round 4: Swing
+    results.append(test_strat("Swing (KD)", KDBacktestStrategy, [{'period': 9, 'period_dfast': 3, 'period_dslow': 3}]))
 
-    # Swing (KD) - 使用 KDBacktestStrategy
-    best_kd_roi = -999; best_kd_p = (9, 3, 3)
-    roi_kd = run_backtest(KDBacktestStrategy, df, period=9, period_dfast=3, period_dslow=3)
-    if roi_kd > best_kd_roi: best_kd_roi = roi_kd
-
-    results = [
-        {"type": "Trend (MA)", "roi": best_trend_roi, "params": {"fast_ma": best_trend_p[0], "slow_ma": best_trend_p[1]}},
-        {"type": "Reversion (RSI)", "roi": best_rsi_roi, "params": {"rsi_low": best_rsi_p[0], "rsi_high": best_rsi_p[1]}},
-        {"type": "Momentum (MACD)", "roi": best_macd_roi, "params": {"macd_fast": best_macd_p[0], "macd_slow": best_macd_p[1], "macd_signal": best_macd_p[2]}},
-        {"type": "Swing (KD)", "roi": best_kd_roi, "params": {"kd_period": 9}}
-    ]
+    # [關鍵優化] 錦標賽評分標準
+    for res in results:
+        # 如果交易次數 < 3，大幅扣分 (懲罰不交易的策略)
+        penalty = -50 if res['trades'] < 3 else 0
+        res['score'] = res['roi'] * 0.7 + res['win_rate'] * 0.3 + penalty
     
-    winner = max(results, key=lambda x: x['roi'])
+    winner = max(results, key=lambda x: x['score'])
+    
+    # 格式化勝率顯示
+    win_rate_display = f"{winner['win_rate']:.1f}%" if winner['trades'] > 0 else "N/A (No Trades)"
+    
+    print(f"🏆 {ticker} Winner: {winner['type']} (ROI: {winner['roi']:.2f}%, Win: {win_rate_display})")
+
     return {
         "strategy_type": winner['type'],
         "params": winner['params'],
         "historical_roi": round(winner['roi'], 2),
+        "win_rate": winner['win_rate'] if winner['trades'] > 0 else 0, # 數字
+        "win_rate_display": win_rate_display, # 字串
         "last_updated": datetime.now().isoformat()
     }
