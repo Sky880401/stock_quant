@@ -48,7 +48,7 @@ class QuantBot(commands.Bot):
         self.target_channel_id = None
 
     async def on_ready(self):
-        log_info(f"🤖 BMO V7.0 (Detailed Error + Bollinger) 上線: {self.user.name}")
+        log_info(f"🤖 BMO V7.3 (UX Polish) 上線: {self.user.name}")
         if not self.daily_scan_task.is_running():
             self.daily_scan_task.start()
 
@@ -93,12 +93,9 @@ async def analyze_stock(ctx, ticker: str = None):
     if view.value is True:
         try:
             data = await asyncio.to_thread(analyze_single_target, clean_ticker, True)
-            
-            # [修改] 錯誤處理邏輯
             if "error" in data:
-                error_msg = data["error"]
-                log_error(f"分析失敗 {clean_ticker}: {error_msg}")
-                await ctx.send(f"❌ **分析失敗**: {error_msg}")
+                # [優化] 直接回傳簡潔的錯誤
+                await ctx.send(f"❌ **分析中斷**: {data['error']}")
                 return
 
             dec = data['final_decision']

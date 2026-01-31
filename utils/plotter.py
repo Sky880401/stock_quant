@@ -19,7 +19,6 @@ def generate_stock_chart(ticker, df, strategy_params=None, output_dir="reports")
     try:
         if df.empty or len(df) < 30: return None
         
-        # 準備數據
         calc_df = df.copy()
         calc_df['MA5'] = calc_df['Close'].rolling(window=5).mean()
         calc_df['MA20'] = calc_df['Close'].rolling(window=20).mean()
@@ -30,59 +29,52 @@ def generate_stock_chart(ticker, df, strategy_params=None, output_dir="reports")
         if 'Foreign' in plot_df.columns:
             plot_df['Foreign'] = plot_df['Foreign'].fillna(0)
         
-        # 樣式
         s = mpf.make_mpf_style(
             base_mpf_style='yahoo',
             marketcolors=mpf.make_marketcolors(up='r', down='g', inherit=True),
             rc={'font.family': font_name, 'axes.unicode_minus': False}
         )
         
-        # 圖層
         ap = [
-            mpf.make_addplot(plot_df['MA5'], color='magenta', width=1.0, label='MA5 (週)'),
-            mpf.make_addplot(plot_df['MA20'], color='orange', width=1.2, label='MA20 (月)'),
-            mpf.make_addplot(plot_df['MA60'], color='green', width=1.5, label='MA60 (季)'),
-            mpf.make_addplot(plot_df['MA240'], color='blue', width=1.5, label='MA240 (年)')
+            mpf.make_addplot(plot_df['MA5'], color='magenta', width=1.0, label='MA5 (W)'),
+            mpf.make_addplot(plot_df['MA20'], color='orange', width=1.2, label='MA20 (M)'),
+            mpf.make_addplot(plot_df['MA60'], color='green', width=1.5, label='MA60 (Q)'),
+            mpf.make_addplot(plot_df['MA240'], color='blue', width=1.5, label='MA240 (Y)')
         ]
+        
+        panel_ratios = (3, 1) # 預設比例
         
         if 'Foreign' in plot_df.columns and plot_df['Foreign'].abs().sum() > 0:
              foreign_data = plot_df['Foreign']
              colors = ['red' if v > 0 else 'green' for v in foreign_data]
              ap.append(mpf.make_addplot(
-                 foreign_data, 
-                 panel=2, 
-                 type='bar', 
-                 color=colors, 
-                 secondary_y=False, 
-                 ylabel='外資'
+                 foreign_data, panel=2, type='bar', color=colors, 
+                 secondary_y=False, ylabel='Foreign'
              ))
+             # [優化] 調整比例：主圖 3，成交量 1.5，外資 1.5 (讓副圖大一點)
+             panel_ratios = (3, 1.5, 1.5)
 
         os.makedirs(output_dir, exist_ok=True)
         filename = f"chart_{ticker}_{int(time.time())}.png"
         output_path = os.path.join(output_dir, filename)
         
-        # [核心修改] 使用 returnfig=True 獲取 fig 物件，手動設置標題
         fig, axes = mpf.plot(
             plot_df,
             type='candle',
             volume=True, 
             addplot=ap,
             style=s,
-            returnfig=True, # 關鍵：回傳 figure 物件
-            panel_ratios=(2, 1, 1) if len(ap) > 4 else (2, 1),
+            returnfig=True,
+            panel_ratios=panel_ratios,
             datetime_format='%Y-%m-%d',
-            tight_layout=True,
-            figsize=(10, 8) # 調整畫布大小
+            figsize=(10, 10) # [優化] 增加高度，讓圖表更舒展
         )
         
-        # 手動設置標題，y=1.02 代表在畫布最上緣再往上一點點
-        title_text = f"{ticker} 技術分析圖"
-        fig.suptitle(title_text, fontproperties=my_font, fontsize=16, y=0.95)
+        title_text = f"{ticker} Technical Chart"
+        fig.suptitle(title_text, fontproperties=my_font, fontsize=18, y=0.96)
+        fig.tight_layout(rect=[0, 0, 1, 0.94]) # 留出頂部空間
         
-        # 存檔
-        fig.savefig(output_path, dpi=100, bbox_inches='tight')
-        
-        # 釋放記憶體 (重要)
+        fig.savefig(output_path, dpi=100)
         matplotlib.pyplot.close(fig)
         
         return output_path
