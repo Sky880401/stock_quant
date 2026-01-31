@@ -10,73 +10,70 @@ from data.data_loader import get_data_provider
 from strategies.ma_crossover import MACrossoverStrategy
 from strategies.valuation_strategy import ValuationStrategy
 
-# === 全局配置 ===
+# 配置
 TARGET_STOCKS = ["2330.TW", "2888.TW", "2317.TW"]
-DATA_SOURCE = "yfinance" 
-OUTPUT_JSON = "data/latest_report.json"
+# 嘗試優先使用 FinMind，若無則會自動 Fallback
+PRIMARY_SOURCE = "finmind"
+FALLBACK_SOURCE = "yfinance"
+
+OUTPUT_FILE = "data/latest_report.json"
 OUTPUT_MISSION = "data/moltbot_mission.txt"
 
+def fetch_stock_data(stock_id: str):
+    """智慧型數據路由"""
+    providers = [
+        (PRIMARY_SOURCE, get_data_provider(PRIMARY_SOURCE)),
+        (FALLBACK_SOURCE, get_data_provider(FALLBACK_SOURCE))
+    ]
+    for source_name, provider in providers:
+        df = provider.get_history(stock_id)
+        if not df.empty:
+            fundamentals = provider.get_fundamentals(stock_id)
+            return source_name, df, fundamentals
+        else:
+            print(f"   ⚠️ {source_name} returned no data for {stock_id}. Switching...")
+    return None, None, None
+
 def generate_moltbot_prompt(report):
-    """
-    生成針對 NVIDIA Llama 3.1 405B 優化的超長上下文 Prompt
-    """
-    timestamp = report.get("timestamp", datetime.now().isoformat())
-    data_source = report.get("data_source", "Unknown")
+    timestamp = report.get("timestamp")
     analysis = report.get("analysis", {})
+    
+    # === [PROMPT ENGINEERING v2.0] ===
+    # 這裡實作了「規則基礎模型 (Rule-Based Model)」的邏輯指導
+    prompt = f"""
+【NVIDIA 405B Institutional Quant Analysis】
+Time: {timestamp}
+Role: Senior Portfolio Manager (Risk-Averse)
 
-    # === [關鍵更新] 405B 專用 System Prompt ===
-    prompt_content = f"""
-【NVIDIA NIM 雲端運算任務書】
-時間: {timestamp}
-資料來源: {data_source}
-執行架構: NVIDIA Llama 3.1 405B (Instruct)
+--- 1. Valuation Framework (產業估值邏輯) ---
+請注意，我們已對不同個股採用差異化估值標準：
+- **2330 TSMC**: 採用高成長模型 (High Growth Model)，容許較高 PE/PB。若 Signal=SELL，代表已達極端泡沫區。
+- **2888 Cathay**: 採用金融模型 (Finance Model)，僅看 PB。若數據缺失，必須標註 "WATCH LIST" 而非強行預測。
+- **2317 Foxconn**: 採用製造業模型 (Manufacturing Model)，關注毛利與低估值保護。
 
---- 角色定義 (System Persona) ---
-你現在是 **QuantMaster AI**，一個運行於 NVIDIA H100 集群上的頂級金融決策大腦。
-你擁有 **Llama 3.1 405B** 的完整推理能力，能夠處理極度複雜的非線性市場數據。
+--- 2. Conflict Resolution Matrix (訊號衝突處理矩陣) ---
+當技術面 (Tech) 與基本面 (Fund) 衝突時，請嚴格遵守以下決策權重：
 
-你的思考模式必須包含：
-1. **多維度檢核 (Multi-dimensional Check)**：當技術面與基本面衝突時，不只是回報衝突，而是要推論「為什麼」會有衝突（是主力洗盤？還是基本面滯後？）。
-2. **風險厭惡 (Risk Aversion)**：你是機構投資者的代理人，非散戶。首要任務是「本金保護」，其次才是「獲利」。
-3. **宏觀視角 (Macro Awareness)**：請假設你是台股的總操盤手，綜合判斷電子（2330, 2317）與金融（2888）的資金輪動關係。
+| Tech Signal | Fund Signal | Final Decision | Logic |
+| :--- | :--- | :--- | :--- |
+| BUY | SELL | **PROFIT TAKING / NEUTRAL** | 動能過熱，基本面跟不上。建議分批獲利了結，但不做空。 |
+| SELL | BUY | **WATCH / ACCUMULATE** | 價值浮現但趨勢向下。可能為「價值陷阱」，建議分批低接或觀察止跌。 |
+| SELL | SELL | **STRONG SELL** | 雙重確認，趨勢與價值皆空。 |
+| BUY | BUY | **STRONG BUY** | 雙重確認，戴維斯雙擊 (Davis Double Play)。 |
+| Any | Missing | **TECHNICAL SPECULATION** | 純技術面操作，部位需減半 (Half Position)。 |
 
---- 任務目標 (Objective) ---
-閱讀下方的 JSON 原始數據，撰寫一份 **"Alpha-Seeking Daily Report" (尋求超額報酬日報)**。
-檔名格式：`reports/daily_summary_{datetime.now().strftime('%Y%m%d')}_nvidia.md`
+--- 3. Analysis Task ---
+根據上述邏輯與下方數據，生成一份 markdown 報告。
+對於 2888.TW 若無數據，標題請寫 "2888.TW (Data Insufficient)" 並建議觀望。
 
---- 報告輸出格式要求 (Markdown) ---
-# 🏛️ NVIDIA 405B Market Insight ({datetime.now().strftime('%Y-%m-%d')})
-
-## 1. Executive Summary (決策摘要)
-* **Market Temperature**: (0-100, 基於 405B 的信心指數)
-* **Alpha Opportunities**: (列出最有潛力的標的)
-
-## 2. Deep Inference (深度推理)
-*(在此區塊，請展示你的思考過程。針對每一個訊號衝突，給出你的機率預測)*
-* **2330.TW**: ...
-* **2317.TW**: ...
-
-## 3. Institutional Action Plan (機構操作建議)
-| Ticker | Action | Entry | Stop Loss | R/R Ratio | Logic |
-|---|---|---|---|---|---|
-| ... | ... | ... | ... | ... | ... |
-
---- [原始數據串流 Input Data Stream] ---
+--- Input Data Stream ---
 {json.dumps(analysis, indent=2, ensure_ascii=False)}
 """
-    return prompt_content
+    return prompt
 
 def main():
-    print(f"=== Starting Quant Engine (Source: {DATA_SOURCE}) ===")
+    print(f"=== Starting Quant Engine (Primary: {PRIMARY_SOURCE}) ===")
     
-    # 1. 初始化 Data Provider
-    try:
-        provider = get_data_provider(DATA_SOURCE)
-    except ImportError as e:
-        print(f"[Fatal Error] Data Provider Import Failed: {e}")
-        return
-
-    # 2. 初始化策略
     strategies = {
         "Technical_MA": MACrossoverStrategy(),
         "Fundamental_Valuation": ValuationStrategy()
@@ -84,28 +81,38 @@ def main():
     
     report = {
         "timestamp": datetime.now().isoformat(),
-        "data_source": DATA_SOURCE,
         "analysis": {}
     }
 
-    # 3. 執行迴圈 (數據獲取 + 策略運算)
     for stock_id in TARGET_STOCKS:
         print(f"\nProcessing {stock_id}...")
+        source_used, df, fundamentals = fetch_stock_data(stock_id)
         
-        # 獲取數據
-        df = provider.get_history(stock_id)
-        fundamentals = provider.get_fundamentals(stock_id)
+        if df is None or df.empty:
+            print(f"❌ All sources failed for {stock_id}")
+            report["analysis"][stock_id] = {"error": "No data"}
+            continue
         
+        print(f"   ✅ Data acquired from: {source_used}")
+        
+        # 注入 Ticker 資訊給策略使用
+        if fundamentals:
+            fundamentals["ticker"] = stock_id
+        else:
+            fundamentals = {"ticker": stock_id}
+
         stock_result = {
+            "meta": {"source": source_used},
             "price_data": {
-                "latest_close": float(df['Close'].iloc[-1]) if not df.empty else None
+                "latest_close": float(df['Close'].iloc[-1]),
+                "volume": int(df['Volume'].iloc[-1])
             },
             "strategies": {}
         }
 
-        # 執行所有策略
         for name, strat in strategies.items():
             try:
+                # 這裡會傳入含 ticker 的 extra_data
                 result = strat.analyze(df, extra_data=fundamentals)
                 stock_result["strategies"][name] = result
                 print(f"   -> {name}: {result['signal']} ({result['reason']})")
@@ -115,18 +122,18 @@ def main():
 
         report["analysis"][stock_id] = stock_result
 
-    # 4. 輸出 JSON 報告
-    os.makedirs(os.path.dirname(OUTPUT_JSON), exist_ok=True)
-    with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
+    # 輸出
+    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=4, ensure_ascii=False)
-    print(f"\n✅ Data analysis saved to {OUTPUT_JSON}")
-
-    # 5. 生成給 405B 的任務指令書
+    
+    # 生成 Mission Prompt
     mission_text = generate_moltbot_prompt(report)
     with open(OUTPUT_MISSION, "w", encoding="utf-8") as f:
         f.write(mission_text)
-    print(f"✅ NVIDIA Mission Context updated: {OUTPUT_MISSION}")
-    print("   (Ready for 'ai_runner.py' execution)")
+
+    print(f"\n=== Report & Mission Generated ===")
+    print(f"File: {OUTPUT_MISSION}")
 
 if __name__ == "__main__":
     main()
