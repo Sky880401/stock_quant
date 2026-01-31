@@ -1,7 +1,7 @@
 import sys
 import os
 import json
-import yfinance as yf # 引入 yfinance 用來查名稱
+import yfinance as yf
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -17,7 +17,7 @@ FALLBACK_SOURCE = "yfinance"
 OUTPUT_FILE = "data/latest_report.json"
 OUTPUT_MISSION = "data/moltbot_mission.txt"
 
-# ... (保持 fetch_stock_data_smart 原樣，省略以節省篇幅) ...
+# ... (保留 fetch_stock_data_smart 與 source_used_name，省略以節省篇幅) ...
 def fetch_stock_data_smart(stock_id: str):
     clean_id = stock_id.split('.')[0]
     yf_id = stock_id
@@ -33,7 +33,6 @@ def fetch_stock_data_smart(stock_id: str):
             df = provider.get_history(target_id)
             if not df.empty:
                 fundamentals = provider.get_fundamentals(target_id)
-                # 混合數據補強
                 if (not fundamentals or not fundamentals.get("pe_ratio")) and clean_id.isdigit():
                      yf_funds = get_data_provider(FALLBACK_SOURCE).get_fundamentals(yf_id)
                      if not fundamentals: fundamentals = {}
@@ -48,20 +47,16 @@ def source_used_name(base, fund):
     return base
 
 def get_stock_name(stock_id: str) -> str:
-    """[UX優化] 嘗試獲取股票名稱"""
     try:
-        # 統一使用 Yahoo 查名稱 (FinMind 查名稱比較麻煩)
-        # 如果是純數字，加上 .TW 查查看
         query_id = f"{stock_id}.TW" if stock_id.isdigit() else stock_id
         ticker = yf.Ticker(query_id)
-        # 優先取長名(通常含中文)，失敗取短名，再失敗回傳代號
-        name = ticker.info.get('longName') or ticker.info.get('shortName') or stock_id
-        return name
+        # 優先取短名，通常比較乾淨
+        return ticker.info.get('shortName') or ticker.info.get('longName') or stock_id
     except:
         return stock_id
 
 def calculate_final_decision(tech_res, fund_res):
-    # ... (保持 v3.0 的決策邏輯原樣，省略) ...
+    # ... (保持 v3.0 的決策邏輯，省略) ...
     base_confidence = tech_res.get("confidence", 0.0)
     total_penalty = tech_res.get("risk_penalty", 0.0) + fund_res.get("risk_penalty", 0.0)
     final_confidence = max(0.0, base_confidence - total_penalty)
@@ -96,8 +91,6 @@ def analyze_single_target(stock_id: str):
 
     if not fundamentals: fundamentals = {}
     fundamentals["ticker"] = stock_id
-
-    # [UX優化] 獲取股票名稱
     stock_name = get_stock_name(stock_id)
 
     tech_strat = MACrossoverStrategy()
@@ -108,19 +101,12 @@ def analyze_single_target(stock_id: str):
     decision = calculate_final_decision(tech_res, fund_res)
 
     return {
-        "meta": {
-            "source": source_used, 
-            "ticker": stock_id,
-            "name": stock_name # 新增名稱欄位
-        },
+        "meta": {"source": source_used, "ticker": stock_id, "name": stock_name},
         "price_data": {
             "latest_close": float(df['Close'].iloc[-1]),
             "volume": int(df['Volume'].iloc[-1])
         },
-        "strategies": {
-            "Technical": tech_res,
-            "Fundamental": fund_res
-        },
+        "strategies": {"Technical": tech_res, "Fundamental": fund_res},
         "final_decision": decision
     }
 
@@ -128,10 +114,10 @@ def generate_moltbot_prompt(data, is_single=False):
     timestamp = datetime.now().isoformat()
     if is_single:
         context = json.dumps(data, indent=2, ensure_ascii=False)
-        # [UX優化] Prompt 加入股票名稱，讓 AI 也可以叫出名字
         ticker = data['meta']['ticker']
-        name = data['meta'].get('name', ticker)
-        header = f"【BMO 即時個股診斷: {name} ({ticker})】"
+        # 這裡的 name 可能是英文，留給 AI 翻譯
+        raw_name = data['meta'].get('name', ticker)
+        header = f"【BMO 即時個股診斷: {ticker}】"
     else:
         context = json.dumps(data.get("analysis", {}), indent=2, ensure_ascii=False)
         header = "【BMO 機構級量化決策報告】"
@@ -139,18 +125,24 @@ def generate_moltbot_prompt(data, is_single=False):
     prompt = f"""
 {header}
 時間: {timestamp}
-語言: **繁體中文**
-角色: **BMO (QuantMaster AI)** - 您的專屬量化投資顧問。
-風格: 專業、客觀、風險導向。
+語言: **繁體中文 (Traditional Chinese)** - 必須嚴格執行。
+角色: **BMO** - 您的台灣在地化量化投資顧問。
 
---- 系統決策邏輯 ---
-1. **Action**: 根據 final_decision 給出操作指令。
-2. **Stop Loss**: 必須強調系統計算的停損價。
-3. **Risk**: 若有扣分，請解釋原因。
+--- 翻譯與術語轉換指令 (Strict Translation Rules) ---
+1. **股名翻譯**: 若 Input Data 中的股名是英文 (如 "Taiwan Semiconductor..."), 請務必翻譯成台灣通用的中文名稱 (如 "台積電")。
+2. **訊號翻譯**:
+   - BUY -> 買進
+   - SELL -> 賣出
+   - HOLD -> 續抱/觀望
+   - STRONG BUY -> 強力買進
+   - Technical Only -> 僅依技術面
+3. **專有名詞**:
+   - Stop Loss -> 停損點
+   - Position Size -> 建議倉位
 
 --- 任務 ---
 請以 BMO 的口吻撰寫報告。
-開頭請說：「Hi, 我是 BMO。關於 {data['meta'].get('name', '')} ({data['meta']['ticker']}) 的分析如下...」
+開頭範例：「Hi, 我是 BMO。關於 **[中文股名]** ({data.get('meta', {}).get('ticker', '')}) 的分析如下...」
 
 [Input Data]
 {context}
@@ -158,7 +150,7 @@ def generate_moltbot_prompt(data, is_single=False):
     return prompt
 
 def main():
-    print(f"=== Starting Quant Engine v3.1 (UX Upgrade) ===")
+    print(f"=== Starting Quant Engine v3.2 (Localization) ===")
     report = {"timestamp": datetime.now().isoformat(), "analysis": {}}
     for stock_id in TARGET_STOCKS:
         print(f"Processing {stock_id}...")
@@ -166,8 +158,6 @@ def main():
         if res:
             report["analysis"][stock_id] = res
             print(f"   ✅ Done ({res['meta']['name']})")
-        else:
-            print(f"   ❌ Failed")
     os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=4, ensure_ascii=False)
