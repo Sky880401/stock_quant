@@ -8,7 +8,7 @@ from strategies.comprehensive_strategy import ComprehensiveStrategy
 # === Configuration ===
 # 您可以隨意增加更多台股或美股
 TARGET_STOCKS = [
-    "2330.TW",  # 台股
+    "3019.TW",  # 台股
     #"SPAX.PVT" # 美股 (大型股)
 ]
 DATA_SOURCE = "yfinance"
