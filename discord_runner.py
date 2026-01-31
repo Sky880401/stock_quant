@@ -1,114 +1,133 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import os
 import asyncio
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
+from datetime import time, timezone
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 load_dotenv(dotenv_path=Path(PROJECT_ROOT) / '.env', override=True)
 
-from main import analyze_single_target, generate_moltbot_prompt
+from main import analyze_single_target, generate_moltbot_prompt, get_stock_name_zh, TARGET_STOCKS
 from ai_runner import generate_insight
+
+# === 互動式視圖 (Buttons) ===
+class ConfirmView(discord.ui.View):
+    def __init__(self, ctx, ticker, stock_name):
+        super().__init__(timeout=60) # 60秒後失效
+        self.ctx = ctx
+        self.ticker = ticker
+        self.stock_name = stock_name
+        self.value = None
+
+    @discord.ui.button(label="✅ 確認分析", style=discord.ButtonStyle.green)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.ctx.author:
+            await interaction.response.send_message("這不是你的按鈕！", ephemeral=True)
+            return
+        
+        await interaction.response.send_message(f"🚀 BMO 啟動！正在為 **{self.stock_name}** 進行深度運算 (含回測優化)...", ephemeral=False)
+        self.value = True
+        self.stop() # 停止監聽
+
+    @discord.ui.button(label="❌ 取消", style=discord.ButtonStyle.red)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.ctx.author: return
+        await interaction.response.send_message("已取消。", ephemeral=True)
+        self.value = False
+        self.stop()
 
 class QuantBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
+        self.target_channel_id = None
 
     async def on_ready(self):
-        print(f"🤖 BMO (QuantMaster) 上線: {self.user.name}")
-        # 設定機器人狀態
-        await self.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="台股盤勢 | !analyze"))
+        print(f"🤖 BMO Interactive (v5.2) 上線: {self.user.name}")
+        await self.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="!a <代號>"))
+        if not self.daily_scan_task.is_running():
+            self.daily_scan_task.start()
+
+    @tasks.loop(time=time(hour=6, minute=0, tzinfo=timezone.utc))
+    async def daily_scan_task(self):
+        if not self.target_channel_id: return
+        channel = self.get_channel(self.target_channel_id)
+        if not channel: return
+        # 自動掃描邏輯... (省略以簡化，可沿用舊版)
 
 bot = QuantBot()
 
-async def resolve_ticker(ctx, raw_input):
+async def resolve_ticker_info(ticker_input):
+    """只查名稱，不跑分析"""
+    raw = ticker_input.upper().strip()
     candidates = []
-    raw_input = raw_input.upper().strip()
-    if raw_input.isdigit():
-        candidates = [f"{raw_input}.TW", f"{raw_input}.TWO"]
-    else:
-        candidates = [raw_input]
-
-    status_msg = await ctx.send(f"🔍 BMO 正在搜尋代號: **{raw_input}** ...")
+    if raw.isdigit(): candidates = [f"{raw}.TWO", f"{raw}.TW"] # 優先試上櫃
+    else: candidates = [raw]
     
-    for ticker in candidates:
-        data = await asyncio.to_thread(analyze_single_target, ticker)
-        if data:
-            # [UX優化] 抓取中文名稱
-            stock_name = data['meta'].get('name', ticker)
-            clean_ticker = data['meta']['ticker']
-            
-            # [UX優化] 回應文案修改
-            await status_msg.edit(content=f"✅ 找到 **{stock_name}** ({clean_ticker})，BMO 正在思考中... 🧠")
-            return data
-            
-    await status_msg.edit(content=f"❌ BMO 找不到代號 `{raw_input}` 的數據。")
-    return None
+    for c in candidates:
+        name = get_stock_name_zh(c)
+        # 如果名字不是代號本身，代表找到了
+        if name != c:
+            return c, name
+    
+    # 如果都沒找到，回傳第一個候選人
+    return candidates[0], candidates[0]
 
-@bot.command(name="analyze", aliases=["a", "查"])
+@bot.command(name="analyze", aliases=["a"])
 async def analyze_stock(ctx, ticker: str = None):
     if not ticker:
-        await ctx.send("請輸入代號，例如: `!a 2330`")
+        await ctx.send("請輸入代號，例如 `!a 3141`")
         return
-
-    quant_data = await resolve_ticker(ctx, ticker)
-    if not quant_data:
-        return
-
-    try:
-        prompt = generate_moltbot_prompt(quant_data, is_single=True)
-        ai_response = await asyncio.to_thread(generate_insight, prompt)
         
-        # [UX優化] 標題與格式
-        stock_name = quant_data['meta'].get('name', ticker)
-        header = f"📊 **BMO 投資診斷室: {stock_name}**"
-        
-        if len(ai_response) > 1900:
-            tmp_path = "reports/temp_insight.md"
-            os.makedirs("reports", exist_ok=True)
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                f.write(ai_response)
-            await ctx.send(f"{header}\n(完整報告請見附件)", file=discord.File(tmp_path))
-        else:
-            await ctx.send(f"{header}\n\n{ai_response}")
-
-    except Exception as e:
-        await ctx.send(f"❌ BMO 發生錯誤: {str(e)}")
-
-@bot.command(name="report")
-async def send_daily_report(ctx):
-    # (保持原樣，僅修改標題顯示)
-    try:
-        json_path = os.path.join(PROJECT_ROOT, 'data/latest_report.json')
-        if os.path.exists(json_path):
-            import json
-            data = json.load(open(json_path))
-            ts = data.get('timestamp', '')[:10].replace('-', '')
-            report_path = os.path.join(PROJECT_ROOT, "reports", f"daily_summary_{ts}_nvidia.md")
+    # 1. 快速查找名稱 (不耗時)
+    clean_ticker, stock_name = await asyncio.to_thread(resolve_ticker_info, ticker)
+    
+    # 2. 發送確認按鈕
+    view = ConfirmView(ctx, clean_ticker, stock_name)
+    msg = await ctx.send(f"🧐 您是想查詢 **{stock_name} ({clean_ticker})** 嗎？", view=view)
+    
+    # 等待使用者點擊
+    await view.wait()
+    
+    # 移除按鈕
+    await msg.edit(view=None)
+    
+    if view.value is True:
+        # 3. 使用者確認了，開始執行耗時任務 (Auto-Optimization)
+        try:
+            # 傳入 True 開啟即時優化
+            data = await asyncio.to_thread(analyze_single_target, clean_ticker, True)
             
-            if os.path.exists(report_path):
-                with open(report_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                header = f"🗓️ **BMO 每日市場掃描 ({ts})**"
-                if len(content) > 1900:
-                    await ctx.send(f"{header}", file=discord.File(report_path))
-                else:
-                    await ctx.send(f"{header}\n\n{content}")
-            else:
-                await ctx.send("❌ 尚未生成今日日報。")
-        else:
-            await ctx.send("❌ 無數據。")
-    except Exception as e:
-        await ctx.send(f"❌ Error: {e}")
+            if not data:
+                await ctx.send(f"❌ 分析失敗：無法獲取 {clean_ticker} 的數據。")
+                return
+
+            # 生成 AI 觀點
+            prompt = generate_moltbot_prompt(data, is_single=True)
+            ai_response = await asyncio.to_thread(generate_insight, prompt)
+            
+            header = f"📊 **BMO 深度診斷: {data['meta']['name']}**"
+            
+            files = []
+            if data.get('chart_path') and os.path.exists(data['chart_path']):
+                files.append(discord.File(data['chart_path']))
+                
+            await ctx.send(f"{header}\n\n{ai_response}", files=files)
+            
+        except Exception as e:
+            await ctx.send(f"❌ 系統錯誤: {str(e)}")
+
+# bind 指令略
+@bot.command(name="bind")
+async def bind_channel(ctx):
+    bot.target_channel_id = ctx.channel.id
+    await ctx.send("✅ 綁定成功")
 
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
-    if token:
-        bot.run(token)
-    else:
-        print("❌ DISCORD_TOKEN missing")
+    if token: bot.run(token)
