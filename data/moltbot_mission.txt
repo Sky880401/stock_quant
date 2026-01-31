@@ -1,62 +1,73 @@
 
-【NVIDIA 405B Institutional Quant Analysis】
-Time: 2026-01-31T15:07:32.474783
-Role: Senior Portfolio Manager (Risk-Averse)
+【NVIDIA 405B 機構級量化決策報告】
+時間: 2026-01-31T15:31:04.243080
+角色: 華爾街出身的台股資深操盤手 (風格：風險趨避、邏輯嚴謹、用詞犀利)
+語言要求: **繁體中文 (Traditional Chinese)**
 
---- 1. Valuation Framework (產業估值邏輯) ---
-請注意，我們已對不同個股採用差異化估值標準：
-- **2330 TSMC**: 採用高成長模型 (High Growth Model)，容許較高 PE/PB。若 Signal=SELL，代表已達極端泡沫區。
-- **2888 Cathay**: 採用金融模型 (Finance Model)，僅看 PB。若數據缺失，必須標註 "WATCH LIST" 而非強行預測。
-- **2317 Foxconn**: 採用製造業模型 (Manufacturing Model)，關注毛利與低估值保護。
+--- 1. 估值模型架構 (Valuation Framework) ---
+- **2330 台積電**: 採用「高成長模型 (High Growth)」。允許較高 PE/PB，但若訊號為 SELL 則代表極度泡沫。
+- **2888 國泰金**: 採用「金融股模型」，僅看 PB (股價淨值比)。若數據缺失，請建議「暫時觀望」。
+- **2317 鴻海**: 採用「製造業模型」，關注毛利保護。
 
---- 2. Conflict Resolution Matrix (訊號衝突處理矩陣) ---
-當技術面 (Tech) 與基本面 (Fund) 衝突時，請嚴格遵守以下決策權重：
+--- 2. 衝突決策矩陣 (Conflict Matrix) ---
+當「技術面 (Tech)」與「基本面 (Fund)」訊號衝突時，請嚴格執行以下紀律：
 
-| Tech Signal | Fund Signal | Final Decision | Logic |
+| 技術面 | 基本面 | 最終決策 | 操盤邏輯 |
 | :--- | :--- | :--- | :--- |
-| BUY | SELL | **PROFIT TAKING / NEUTRAL** | 動能過熱，基本面跟不上。建議分批獲利了結，但不做空。 |
-| SELL | BUY | **WATCH / ACCUMULATE** | 價值浮現但趨勢向下。可能為「價值陷阱」，建議分批低接或觀察止跌。 |
-| SELL | SELL | **STRONG SELL** | 雙重確認，趨勢與價值皆空。 |
-| BUY | BUY | **STRONG BUY** | 雙重確認，戴維斯雙擊 (Davis Double Play)。 |
-| Any | Missing | **TECHNICAL SPECULATION** | 純技術面操作，部位需減半 (Half Position)。 |
+| BUY | SELL | **獲利了結 (PROFIT TAKING)** | 籌碼過熱，價值面跟不上。建議分批出場，不做空。 |
+| SELL | BUY | **低接/觀察 (ACCUMULATE)** | 價值浮現但趨勢向下（可能是錯殺）。建議分批佈局。 |
+| SELL | SELL | **強力賣出 (STRONG SELL)** | 趨勢與價值雙殺。 |
+| BUY | BUY | **強力買進 (STRONG BUY)** | 戴維斯雙擊 (Davis Double Play)。 |
 
---- 3. Analysis Task ---
-根據上述邏輯與下方數據，生成一份 markdown 報告。
-對於 2888.TW 若無數據，標題請寫 "2888.TW (Data Insufficient)" 並建議觀望。
+--- 3. 報告撰寫要求 ---
+請根據下方數據，撰寫一份給基金經理人的晨報。
+* **標題**: 請包含日期與「NVIDIA 405B 決策日報」。
+* **個股分析**: 每一檔股票都要有「訊號解讀」與「操作建議」。
+* **語氣**: 不要像機器人，要像一個有經驗的分析師。例如：「雖然技術面轉強，但考慮到估值過高，我們認為這只是死貓跳...」
 
---- Input Data Stream ---
+--- [輸入數據流 Input Data] ---
 {
   "2330.TW": {
     "meta": {
-      "source": "yfinance"
+      "source": "finmind"
     },
     "price_data": {
       "latest_close": 1775.0,
-      "volume": 43600793
+      "volume": 46341867
     },
     "strategies": {
       "Technical_MA": {
         "signal": "BUY",
         "confidence": 0.8,
         "reason": "Bullish Alignment (MA5 > MA20 > MA60)",
-        "data": {
-          "close": 1775.0,
+        "scores": {
+          "tech_score": 2.0
+        },
+        "assumptions": [
+          "Short-term momentum is strong",
+          "Long-term trend is up"
+        ],
+        "raw_data": {
+          "price": 1775.0,
           "ma5": 1787.0,
           "ma20": 1734.75,
-          "ma60": 1549.0013936360676,
-          "atr": 34.75347269309094,
-          "suggested_stop": 1705.493054613818,
-          "suggested_target": 1879.2604180792728
+          "ma60": 1551.0
         }
       },
       "Fundamental_Valuation": {
         "signal": "SELL",
         "confidence": 0.6,
-        "reason": "PE(26.8) Fair; PB(8.5)>Sell(8.0)",
-        "data": {
-          "pe": 26.7965,
-          "pb": 8.4958315,
-          "thresholds_used": {
+        "reason": "Score: -1 (PE=29.01, PB=9.21)",
+        "scores": {
+          "valuation_score": -1
+        },
+        "assumptions": [
+          "PB Expensive (>8.0)"
+        ],
+        "raw_data": {
+          "pe": 29.01,
+          "pb": 9.21,
+          "thresholds": {
             "pe_buy": 20,
             "pe_sell": 35,
             "pb_buy": 4.5,
@@ -67,33 +78,85 @@ Role: Senior Portfolio Manager (Risk-Averse)
     }
   },
   "2888.TW": {
-    "error": "No data"
-  },
-  "2317.TW": {
     "meta": {
-      "source": "yfinance"
+      "source": "finmind"
     },
     "price_data": {
-      "latest_close": 220.5,
-      "volume": 70919952
+      "latest_close": 11.8,
+      "volume": 1150009120
     },
     "strategies": {
       "Technical_MA": {
         "signal": "SELL",
         "confidence": 0.8,
         "reason": "Bearish Alignment (MA5 < MA20 < MA60)",
-        "data": {
-          "close": 220.5,
-          "ma5": 223.9,
-          "ma20": 228.15,
-          "ma60": 229.50833333333333,
-          "atr": 5.423491897674166,
-          "suggested_stop": 231.34698379534834,
-          "suggested_target": 204.2295243069775
+        "scores": {
+          "tech_score": -2.0
+        },
+        "assumptions": [
+          "Downward pressure confirmed"
+        ],
+        "raw_data": {
+          "price": 11.8,
+          "ma5": 11.339999999999998,
+          "ma20": 11.492500000000001,
+          "ma60": 11.585833333333335
         }
       },
       "Fundamental_Valuation": {
-        "error": "cannot access local variable 'confidence' where it is not associated with a value"
+        "signal": "HOLD",
+        "confidence": 0.0,
+        "reason": "Insufficient Data (Missing PE/PB)",
+        "scores": {},
+        "assumptions": [],
+        "raw_data": {}
+      }
+    }
+  },
+  "2317.TW": {
+    "meta": {
+      "source": "finmind"
+    },
+    "price_data": {
+      "latest_close": 220.5,
+      "volume": 72547288
+    },
+    "strategies": {
+      "Technical_MA": {
+        "signal": "SELL",
+        "confidence": 0.8,
+        "reason": "Bearish Alignment (MA5 < MA20 < MA60)",
+        "scores": {
+          "tech_score": -2.0
+        },
+        "assumptions": [
+          "Downward pressure confirmed"
+        ],
+        "raw_data": {
+          "price": 220.5,
+          "ma5": 223.9,
+          "ma20": 228.15,
+          "ma60": 229.50833333333333
+        }
+      },
+      "Fundamental_Valuation": {
+        "signal": "HOLD",
+        "confidence": 0.5,
+        "reason": "Score: 0 (PE=16.17, PB=1.88)",
+        "scores": {
+          "valuation_score": 0
+        },
+        "assumptions": [],
+        "raw_data": {
+          "pe": 16.17,
+          "pb": 1.88,
+          "thresholds": {
+            "pe_buy": 15,
+            "pe_sell": 25,
+            "pb_buy": 1.5,
+            "pb_sell": 4.0
+          }
+        }
       }
     }
   }
