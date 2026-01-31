@@ -48,15 +48,13 @@ class QuantBot(commands.Bot):
         self.target_channel_id = None
 
     async def on_ready(self):
-        log_info(f"🤖 BMO V6.2 (UX) 上線: {self.user.name}")
+        log_info(f"🤖 BMO V7.0 (Detailed Error + Bollinger) 上線: {self.user.name}")
         if not self.daily_scan_task.is_running():
             self.daily_scan_task.start()
 
     @tasks.loop(time=time(hour=6, minute=0, tzinfo=timezone.utc))
     async def daily_scan_task(self):
         if not self.target_channel_id: return
-        channel = self.get_channel(self.target_channel_id)
-        if not channel: return
         pass 
 
 bot = QuantBot()
@@ -95,8 +93,12 @@ async def analyze_stock(ctx, ticker: str = None):
     if view.value is True:
         try:
             data = await asyncio.to_thread(analyze_single_target, clean_ticker, True)
-            if not data:
-                await ctx.send(f"❌ 分析失敗：無法獲取 {clean_ticker} 的數據。")
+            
+            # [修改] 錯誤處理邏輯
+            if "error" in data:
+                error_msg = data["error"]
+                log_error(f"分析失敗 {clean_ticker}: {error_msg}")
+                await ctx.send(f"❌ **分析失敗**: {error_msg}")
                 return
 
             dec = data['final_decision']
@@ -113,7 +115,6 @@ async def analyze_stock(ctx, ticker: str = None):
             if data.get('chart_path') and os.path.exists(data['chart_path']):
                 files.append(discord.File(data['chart_path']))
             
-            # [UX優化] 不再發送圖片路徑文字，直接發送圖片物件
             await ctx.send(f"{header}\n\n{ai_response}", files=files)
             
         except Exception as e:
