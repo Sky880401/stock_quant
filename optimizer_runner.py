@@ -9,7 +9,7 @@ import logging
 logging.getLogger('yfinance').setLevel(logging.CRITICAL)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from data.data_loader import get_data_provider
-from strategies.kd_strategy import KDBacktestStrategy
+from strategies.indicators.kd_strategy import KDBacktestStrategy
 
 CONFIG_FILE = "data/stock_config.json"
 

@@ -1,0 +1,9 @@
+discord.py
+backtrader
+mplfinance
+pandas
+numpy
+python-dotenv
+requests
+beautifulsoup4
+FinMind

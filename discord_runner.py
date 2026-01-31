@@ -18,7 +18,7 @@ from utils.logger import log_info, log_error
 from utils.history_recorder import record_user_query
 from utils.quota_manager import check_quota_status, deduct_quota, admin_add_quota
 
-# Load stock map (省略，保持原樣)
+# Load stock map
 STOCK_MAP = {}
 def load_stock_map():
     global STOCK_MAP
@@ -34,13 +34,13 @@ def load_stock_map():
         print(f"❌ Failed to load stock map: {e}")
 
 class ConfirmView(discord.ui.View):
-    def __init__(self, ctx, ticker, stock_name, user_id, is_admin): # [新增] is_admin
+    def __init__(self, ctx, ticker, stock_name, user_id, is_admin):
         super().__init__(timeout=60)
         self.ctx = ctx
         self.ticker = ticker
         self.stock_name = stock_name
         self.user_id = user_id
-        self.is_admin = is_admin # [新增]
+        self.is_admin = is_admin
         self.value = None
 
     @discord.ui.button(label="✅ 確認分析", style=discord.ButtonStyle.green)
@@ -49,7 +49,6 @@ class ConfirmView(discord.ui.View):
             await interaction.response.send_message("這不是你的按鈕！", ephemeral=True)
             return
         
-        # [修改] 如果是 Admin，不扣額度
         if not self.is_admin:
             deduct_quota(self.user_id)
         
@@ -72,7 +71,7 @@ class QuantBot(commands.Bot):
         self.target_channel_id = None
 
     async def on_ready(self):
-        log_info(f"🤖 BMO V9.3 (Admin Unlimit) 上線: {self.user.name}")
+        log_info(f"🤖 BMO V10.1 (BETA Role + Format) 上線: {self.user.name}")
         await asyncio.to_thread(load_stock_map)
         if not self.daily_scan_task.is_running():
             self.daily_scan_task.start()
@@ -104,15 +103,19 @@ async def analyze_stock(ctx, ticker: str = None):
         return
 
     user_id = ctx.author.id
-    user_name = ctx.author.name
     
-    # [新增] 檢查是否為管理員
+    # [修改] 身分組判斷邏輯
     is_admin = ctx.author.guild_permissions.administrator
-    is_vip = any(role.name in ['Premium', 'VIP'] for role in ctx.author.roles)
+    user_roles = [role.name for role in ctx.author.roles]
     
-    allowed, remaining, limit = check_quota_status(user_id, is_vip)
+    tier = 'free'
+    if any(r in ['Premium', 'VIP'] for r in user_roles):
+        tier = 'premium'
+    elif 'BETA' in user_roles: # 判斷 BETA 身分組
+        tier = 'beta'
     
-    # [修改] 如果是 Admin，直接強制允許，顯示無限符號
+    allowed, remaining, limit = check_quota_status(user_id, tier)
+    
     if is_admin:
         allowed = True
         remaining = "∞ (Admin)"
@@ -126,7 +129,6 @@ async def analyze_stock(ctx, ticker: str = None):
         await ctx.send(f"❌ 代號解析錯誤: {e}")
         return
     
-    # 傳遞 is_admin 給 View
     view = ConfirmView(ctx, clean_ticker, stock_name, user_id, is_admin)
     msg = await ctx.send(f"🧐 您是想查詢 **{stock_name} ({clean_ticker})** 嗎？\n(今日剩餘: {remaining} 次)", view=view)
     await view.wait()
@@ -141,13 +143,17 @@ async def analyze_stock(ctx, ticker: str = None):
 
             dec = data['final_decision']
             roi = data['backtest_insight']['historical_roi'] if data['backtest_insight'] else "N/A"
-            record_user_query(user_name, data['meta']['ticker'], data['meta']['name'], dec['action'], dec['final_confidence'], roi)
+            record_user_query(ctx.author.name, data['meta']['ticker'], data['meta']['name'], dec['action'], dec['final_confidence'], roi)
 
             prompt = generate_moltbot_prompt(data, is_single=True)
             ai_response = await asyncio.to_thread(generate_insight, prompt)
             
             final_name = data['meta']['name']
-            current_price = data['price_data']['latest_close']
+            
+            # [修改] 強制格式化現價為 2 位小數
+            raw_price = data['price_data']['latest_close']
+            current_price = f"{raw_price:.2f}"
+            
             header = f"📊 **BMO 深度診斷: {final_name}** | **現價: {current_price}**"
             
             files = []
