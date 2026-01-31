@@ -1,10 +1,11 @@
 import csv
 import os
 from datetime import datetime
+from pathlib import Path
 
-# [修正] 使用絕對路徑，確保檔案寫入正確位置
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HISTORY_FILE = os.path.join(BASE_DIR, "data", "user_query_history.csv")
+# [修正] 鎖定絕對路徑：從 utils 資料夾往上兩層找到根目錄
+BASE_DIR = Path(__file__).resolve().parent.parent
+HISTORY_FILE = BASE_DIR / "data" / "user_query_history.csv"
 
 def record_user_query(user_name, ticker, stock_name, action, confidence, roi):
     """
@@ -12,11 +13,11 @@ def record_user_query(user_name, ticker, stock_name, action, confidence, roi):
     """
     try:
         # 確保 data 資料夾存在
-        os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
+        os.makedirs(HISTORY_FILE.parent, exist_ok=True)
         
-        file_exists = os.path.isfile(HISTORY_FILE)
+        file_exists = HISTORY_FILE.exists()
         
-        # 使用 'a' (append) 模式寫入，並強制 utf-8-sig (讓 Excel 開啟不亂碼)
+        # 使用 utf-8-sig 寫入 (Excel 相容)
         with open(HISTORY_FILE, mode='a', newline='', encoding='utf-8-sig') as f:
             writer = csv.writer(f)
             
@@ -33,6 +34,8 @@ def record_user_query(user_name, ticker, stock_name, action, confidence, roi):
                 confidence,
                 roi
             ])
-            # print(f"✅ History recorded to {HISTORY_FILE}") # Debug用
+            
+        print(f"📝 History saved: {user_name} -> {ticker} ({action})")
+        
     except Exception as e:
-        print(f"❌ Failed to record history: {e}")
+        print(f"❌ CSV Write Error: {e}")

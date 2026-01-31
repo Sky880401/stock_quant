@@ -48,7 +48,7 @@ class QuantBot(commands.Bot):
         self.target_channel_id = None
 
     async def on_ready(self):
-        log_info(f"🤖 BMO V8.3 (Price+Clean) 上線: {self.user.name}")
+        log_info(f"🤖 BMO V9.0 (Pro Logic) 上線: {self.user.name}")
         if not self.daily_scan_task.is_running():
             self.daily_scan_task.start()
 
@@ -99,16 +99,15 @@ async def analyze_stock(ctx, ticker: str = None):
 
             dec = data['final_decision']
             roi = data['backtest_insight']['historical_roi'] if data['backtest_insight'] else "N/A"
+            
+            # 寫入歷史紀錄
             record_user_query(user_name, data['meta']['ticker'], data['meta']['name'], dec['action'], dec['final_confidence'], roi)
 
             prompt = generate_moltbot_prompt(data, is_single=True)
             ai_response = await asyncio.to_thread(generate_insight, prompt)
             
             final_name = data['meta']['name']
-            # [新增] 獲取現價
             current_price = data['price_data']['latest_close']
-            
-            # [修改] 將現價加入標題
             header = f"📊 **BMO 深度診斷: {final_name}** | **現價: {current_price}**"
             
             files = []
