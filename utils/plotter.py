@@ -4,6 +4,7 @@ import mplfinance as mpf
 import pandas as pd
 import os
 import time
+import glob
 import matplotlib.font_manager as fm
 
 # 字型設定
@@ -14,6 +15,30 @@ if os.path.exists(FONT_PATH):
     font_name = my_font.get_name()
 else:
     font_name = 'sans-serif'
+
+def cleanup_old_charts(output_dir, max_files=100):
+    """
+    清理舊圖片，保留最新的 max_files 張
+    """
+    try:
+        # 找出所有 png 檔案
+        files = glob.glob(os.path.join(output_dir, "*.png"))
+        
+        # 如果檔案數量超過限制
+        if len(files) > max_files:
+            # 依修改時間排序 (最舊的在前面)
+            files.sort(key=os.path.getmtime)
+            
+            # 要刪除的數量
+            num_to_delete = len(files) - max_files
+            
+            for i in range(num_to_delete):
+                try:
+                    os.remove(files[i])
+                    # print(f"🗑️ Deleted old chart: {files[i]}")
+                except: pass
+    except Exception as e:
+        print(f"⚠️ Cleanup failed: {e}")
 
 def generate_stock_chart(ticker, df, strategy_params=None, output_dir="reports"):
     try:
@@ -42,7 +67,7 @@ def generate_stock_chart(ticker, df, strategy_params=None, output_dir="reports")
             mpf.make_addplot(plot_df['MA240'], color='blue', width=1.5, label='MA240 (Y)')
         ]
         
-        panel_ratios = (3, 1) # 預設比例
+        panel_ratios = (3, 1)
         
         if 'Foreign' in plot_df.columns and plot_df['Foreign'].abs().sum() > 0:
              foreign_data = plot_df['Foreign']
@@ -51,7 +76,6 @@ def generate_stock_chart(ticker, df, strategy_params=None, output_dir="reports")
                  foreign_data, panel=2, type='bar', color=colors, 
                  secondary_y=False, ylabel='Foreign'
              ))
-             # [優化] 調整比例：主圖 3，成交量 1.5，外資 1.5 (讓副圖大一點)
              panel_ratios = (3, 1.5, 1.5)
 
         os.makedirs(output_dir, exist_ok=True)
@@ -67,15 +91,18 @@ def generate_stock_chart(ticker, df, strategy_params=None, output_dir="reports")
             returnfig=True,
             panel_ratios=panel_ratios,
             datetime_format='%Y-%m-%d',
-            figsize=(10, 10) # [優化] 增加高度，讓圖表更舒展
+            figsize=(10, 10)
         )
         
         title_text = f"{ticker} Technical Chart"
         fig.suptitle(title_text, fontproperties=my_font, fontsize=18, y=0.96)
-        fig.tight_layout(rect=[0, 0, 1, 0.94]) # 留出頂部空間
+        fig.tight_layout(rect=[0, 0, 1, 0.94])
         
         fig.savefig(output_path, dpi=100)
         matplotlib.pyplot.close(fig)
+        
+        # [新增] 執行自動清理 (保留最新 100 張)
+        cleanup_old_charts(output_dir, max_files=100)
         
         return output_path
     except Exception as e:

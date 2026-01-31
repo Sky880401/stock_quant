@@ -48,7 +48,7 @@ class QuantBot(commands.Bot):
         self.target_channel_id = None
 
     async def on_ready(self):
-        log_info(f"🤖 BMO V7.3 (UX Polish) 上線: {self.user.name}")
+        log_info(f"🤖 BMO V8.3 (Price+Clean) 上線: {self.user.name}")
         if not self.daily_scan_task.is_running():
             self.daily_scan_task.start()
 
@@ -94,7 +94,6 @@ async def analyze_stock(ctx, ticker: str = None):
         try:
             data = await asyncio.to_thread(analyze_single_target, clean_ticker, True)
             if "error" in data:
-                # [優化] 直接回傳簡潔的錯誤
                 await ctx.send(f"❌ **分析中斷**: {data['error']}")
                 return
 
@@ -106,7 +105,11 @@ async def analyze_stock(ctx, ticker: str = None):
             ai_response = await asyncio.to_thread(generate_insight, prompt)
             
             final_name = data['meta']['name']
-            header = f"📊 **BMO 深度診斷: {final_name}**"
+            # [新增] 獲取現價
+            current_price = data['price_data']['latest_close']
+            
+            # [修改] 將現價加入標題
+            header = f"📊 **BMO 深度診斷: {final_name}** | **現價: {current_price}**"
             
             files = []
             if data.get('chart_path') and os.path.exists(data['chart_path']):
