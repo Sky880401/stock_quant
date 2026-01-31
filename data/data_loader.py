@@ -1,122 +1,67 @@
 import pandas as pd
 import yfinance as yf
-try:
-    from FinMind.data import DataLoader as FinMindLoader
-except ImportError:
-    FinMindLoader = None
-
 from abc import ABC, abstractmethod
-from datetime import datetime, timedelta
 
-# ==========================================
-# 1. 定義標準介面
-# ==========================================
-class BaseDataProvider(ABC):
+# 抽象基類 (介面)
+class DataProvider(ABC):
     @abstractmethod
-    def fetch_history(self, ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
+    def get_history(self, stock_id: str, period: str = "1y") -> pd.DataFrame:
+        """回傳包含 Open, High, Low, Close, Volume 的 DataFrame"""
         pass
 
-# ==========================================
-# 2. FinMind 來源 (Primary)
-# ==========================================
-class FinMindProvider(BaseDataProvider):
-    def __init__(self, api_token=None):
-        if FinMindLoader:
-            self.loader = FinMindLoader()
-            if api_token:
-                self.loader.login_by_token(api_token=api_token)
-        else:
-            self.loader = None
-            print("⚠️ FinMind package not installed. Skipping.")
+    @abstractmethod
+    def get_fundamentals(self, stock_id: str) -> dict:
+        """回傳基本面數據字典"""
+        pass
 
-    def fetch_history(self, ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
-        if not self.loader: return None
-        
-        # 移除 .TW (FinMind 格式)
-        stock_id = ticker.split('.')[0]
-        print(f"   [FinMind] Fetching {stock_id}...")
-        
+# 具體實作: Yahoo Finance
+class YFinanceProvider(DataProvider):
+    def get_history(self, stock_id: str, period: str = "1y") -> pd.DataFrame:
+        print(f"   [Data] Fetching history for {stock_id} from yfinance...")
         try:
-            df = self.loader.taiwan_stock_daily(
-                stock_id=stock_id,
-                start_date=start_date,
-                end_date=end_date
-            )
-            if df.empty: return None
-
-            df = df.rename(columns={
-                'date': 'date', 'open': 'open', 'max': 'high', 
-                'min': 'low', 'close': 'close', 'Trading_Volume': 'volume'
-            })
-            cols = ['open', 'high', 'low', 'close', 'volume']
-            df[cols] = df[cols].apply(pd.to_numeric, errors='coerce')
-            return df[['date', 'open', 'high', 'low', 'close', 'volume']]
-        except Exception as e:
-            print(f"   [FinMind] Error: {e}")
-            return None
-
-# ==========================================
-# 3. yfinance 來源 (Backup)
-# ==========================================
-class YFinanceProvider(BaseDataProvider):
-    def fetch_history(self, ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
-        if ".TW" not in ticker and ".TWO" not in ticker:
-            ticker = f"{ticker}.TW"
-        print(f"   [yfinance] Fetching {ticker}...")
-
-        try:
-            df = yf.download(ticker, start=start_date, end=end_date, progress=False)
-            if df.empty: return None
+            # yfinance 最近更新後，回傳格式可能包含 MultiIndex，需做處理
+            df = yf.download(stock_id, period=period, progress=False)
+            if df.empty:
+                return pd.DataFrame()
             
-            df = df.reset_index()
-            # 處理 MultiIndex 欄位
+            # 確保欄位扁平化 (若有 MultiIndex)
             if isinstance(df.columns, pd.MultiIndex):
-                try: df.columns = df.columns.get_level_values(0)
-                except: pass
-
-            df.columns = [c.lower() for c in df.columns]
-            if 'date' not in df.columns and 'datetime' in df.columns:
-                 df = df.rename(columns={'datetime': 'date'})
-
-            df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
-            return df[['date', 'open', 'high', 'low', 'close', 'volume']]
-        except Exception as e:
-            print(f"   [yfinance] Error: {e}")
-            return None
-
-# ==========================================
-# 4. 統一數據管理器 (Manager)
-# ==========================================
-class UnifiedDataManager:
-    def __init__(self, finmind_token=None):
-        self.providers = [
-            FinMindProvider(api_token=finmind_token),
-            YFinanceProvider()
-        ]
-
-    def get_data(self, ticker: str, days: int = 100) -> pd.DataFrame:
-        """
-        整合邏輯：自動切換來源，並統一回傳格式
-        """
-        end_date = datetime.now().strftime('%Y-%m-%d')
-        start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
-        
-        for provider in self.providers:
-            df = provider.fetch_history(ticker, start_date, end_date)
-            if df is not None and not df.empty:
-                print(f"✅ Data loaded via {provider.__class__.__name__}")
-                # 統一格式供策略使用
-                df['Date'] = pd.to_datetime(df['date'])
-                df = df.set_index('Date')
-                df = df.rename(columns={
-                    'open': 'Open', 'high': 'High', 'low': 'Low', 
-                    'close': 'Close', 'volume': 'Volume'
-                })
-                return df
+                df.columns = df.columns.get_level_values(0)
                 
-        print(f"❌ All providers failed for {ticker}")
+            return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+        except Exception as e:
+            print(f"   [Error] Download failed for {stock_id}: {e}")
+            return pd.DataFrame()
+
+    def get_fundamentals(self, stock_id: str) -> dict:
+        print(f"   [Data] Fetching fundamentals for {stock_id}...")
+        try:
+            ticker = yf.Ticker(stock_id)
+            info = ticker.info
+            return {
+                "pb_ratio": info.get("priceToBook"),
+                "pe_ratio": info.get("trailingPE"),
+                "market_cap": info.get("marketCap"),
+                "currency": info.get("currency")
+            }
+        except Exception as e:
+            print(f"   [Error] Fundamentals failed for {stock_id}: {e}")
+            return {}
+
+# 具體實作: FinMind (預留骨架)
+class FinMindProvider(DataProvider):
+    def get_history(self, stock_id: str, period: str = "1y") -> pd.DataFrame:
+        print(f"   [Data] Would fetch from FinMind for {stock_id}")
         return pd.DataFrame()
-    
-    def get_institutional_data(self, stock_id: str) -> dict:
-        # 暫時回傳 None，避免爬蟲錯誤
-        return {"foreign": None, "trust": None, "dealer": None}
+
+    def get_fundamentals(self, stock_id: str) -> dict:
+        return {}
+
+# 工廠函數
+def get_data_provider(source_name: str = 'yfinance') -> DataProvider:
+    if source_name.lower() == 'yfinance':
+        return YFinanceProvider()
+    elif source_name.lower() == 'finmind':
+        return FinMindProvider()
+    else:
+        raise ValueError(f"Unknown data source: {source_name}")
