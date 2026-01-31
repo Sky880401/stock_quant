@@ -57,3 +57,4 @@ Timestamp          , User    , Ticker  , StockName       , Action           , Co
 2026-02-01 02:02:12,skychen.,6443.TW,元晶,REDUCE (Take Profit),0.3,0.02
 2026-02-01 02:03:11,skychen.,3141.TWO,晶宏,REDUCE (Take Profit),0.3,-13.2
 2026-02-01 02:10:56,skychen.,2330.TW,台積電,BUY,0.7000000000000001,200.45
+2026-02-01 02:13:31,skychen.,2308.TW,台達電,EXIT / SELL,0.20000000000000004,0.19
