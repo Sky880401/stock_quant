@@ -13,15 +13,17 @@ from strategies.valuation_strategy import ValuationStrategy
 TARGET_STOCKS = ["2330.TW", "2888.TW", "2317.TW"]
 PRIMARY_SOURCE = "finmind"
 FALLBACK_SOURCE = "yfinance"
+CONFIG_FILE = "data/stock_config.json"
 
 OUTPUT_FILE = "data/latest_report.json"
 OUTPUT_MISSION = "data/moltbot_mission.txt"
 
-# 1. 數據獲取 (保持原樣，省略細節)
 def fetch_stock_data_smart(stock_id: str):
     clean_id = stock_id.split('.')[0]
     yf_id = stock_id
     providers = []
+    
+    # 定義查詢順序
     if clean_id.isdigit():
         providers.append((PRIMARY_SOURCE, get_data_provider(PRIMARY_SOURCE), clean_id))
         providers.append((FALLBACK_SOURCE, get_data_provider(FALLBACK_SOURCE), yf_id))
@@ -30,17 +32,38 @@ def fetch_stock_data_smart(stock_id: str):
         
     for source_name, provider, target_id in providers:
         try:
+            # 1. 獲取股價 (這是最核心的，不能失敗)
             df = provider.get_history(target_id)
-            if not df.empty and len(df) > 200: # 確保數據夠長
+            if df.empty or len(df) < 60: # 放寬限制，至少要有 60 天均線數據
+                continue
+
+            # 2. 獲取基本面 (允許失敗)
+            fundamentals = {}
+            try:
                 fundamentals = provider.get_fundamentals(target_id)
-                # 混合數據補強
-                if (not fundamentals or not fundamentals.get("pe_ratio")) and clean_id.isdigit():
-                     yf_funds = get_data_provider(FALLBACK_SOURCE).get_fundamentals(yf_id)
-                     if not fundamentals: fundamentals = {}
-                     for k,v in yf_funds.items():
-                         if k not in fundamentals or fundamentals[k] is None: fundamentals[k] = v
-                return source_used_name(source_name, fundamentals), df, fundamentals
-        except: continue
+            except: pass # 基本面抓不到就算了
+            
+            # 3. [關鍵修正] 混合數據補強 (獨立 Try-Catch)
+            # 只有當是台股且基本面缺失時才嘗試補強
+            if (not fundamentals or not fundamentals.get("pe_ratio")) and clean_id.isdigit():
+                try:
+                    yf_provider = get_data_provider(FALLBACK_SOURCE)
+                    yf_funds = yf_provider.get_fundamentals(yf_id)
+                    if not fundamentals: fundamentals = {}
+                    for k, v in yf_funds.items():
+                        if k not in fundamentals or fundamentals[k] is None:
+                            fundamentals[k] = v
+                except Exception as e:
+                    # 補強失敗沒關係，我們還有股價就好
+                    # print(f"   ⚠️ Patching failed for {stock_id}: {e}")
+                    pass
+
+            return source_used_name(source_name, fundamentals), df, fundamentals
+
+        except Exception as e:
+            # print(f"   ⚠️ Provider {source_name} failed: {e}")
+            continue
+            
     return None, None, None
 
 def source_used_name(base, fund):
@@ -51,17 +74,19 @@ def get_stock_name(stock_id: str) -> str:
     try:
         query_id = f"{stock_id}.TW" if stock_id.isdigit() else stock_id
         ticker = yf.Ticker(query_id)
-        # 優先取短名 (通常是中文)
         name = ticker.info.get('shortName') or ticker.info.get('longName') or stock_id
-        # 簡單過濾亂碼或過長英文 (可選)
         return name
     except: return stock_id
 
-def calculate_final_decision(tech_res, fund_res):
-    # 邏輯與 v3.0 相同，計算 final_confidence
+def calculate_final_decision(tech_res, fund_res, backtest_info=None):
     base_confidence = tech_res.get("confidence", 0.0)
     total_penalty = tech_res.get("risk_penalty", 0.0) + fund_res.get("risk_penalty", 0.0)
-    final_confidence = max(0.0, base_confidence - total_penalty)
+    
+    roi_bonus = 0.0
+    if backtest_info and backtest_info.get("historical_roi", 0) > 50:
+        roi_bonus = 0.15 # 提高獎勵
+        
+    final_confidence = max(0.0, base_confidence - total_penalty + roi_bonus)
     
     tech_signal = tech_res.get("signal")
     fund_signal = fund_res.get("signal")
@@ -70,26 +95,22 @@ def calculate_final_decision(tech_res, fund_res):
     pos_size = "0%"
 
     if tech_signal == "BUY":
-        if final_confidence >= 0.7: action, pos_size = "STRONG BUY", "80-100%"
+        if final_confidence >= 0.75: action, pos_size = "STRONG BUY", "80-100%"
         elif final_confidence >= 0.5: action, pos_size = "BUY (Standard)", "50%"
         else: action, pos_size = "BUY (Speculative)", "20-30%"
     elif tech_signal == "SELL":
         if final_confidence >= 0.7: action, pos_size = "STRONG SELL", "0%"
         else: action, pos_size = "SELL (Reduce)", "0-20%"
     elif tech_signal == "UNKNOWN":
-        action = "WAIT (Data Insufficient)"
-    
-    # 衝突處理
-    if tech_signal == "BUY" and fund_signal == "SELL":
-        action = "NEUTRAL / PROFIT TAKING"
-        pos_size = "Reduce Position"
+        action = "WAIT"
 
     return {
         "action": action,
         "position_size": pos_size,
         "final_confidence": round(final_confidence, 2),
         "stop_loss_price": tech_res.get("stop_loss", 0.0),
-        "risk_factors": f"Penalty: -{total_penalty}" if total_penalty > 0 else "None"
+        "risk_factors": f"Penalty: {total_penalty}, Bonus: {roi_bonus}",
+        "backtest_support": f"ROI {backtest_info['historical_roi']}%" if backtest_info else "N/A"
     }
 
 def analyze_single_target(stock_id: str):
@@ -99,22 +120,32 @@ def analyze_single_target(stock_id: str):
     if not fundamentals: fundamentals = {}
     fundamentals["ticker"] = stock_id
     stock_name = get_stock_name(stock_id)
+    clean_id = stock_id.split('.')[0]
+
+    backtest_info = None
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                config = json.load(f)
+                if clean_id in config:
+                    backtest_info = config[clean_id]
+        except: pass
 
     tech_strat = MACrossoverStrategy()
     fund_strat = ValuationStrategy()
     
     tech_res = tech_strat.analyze(df, extra_data=fundamentals).to_dict()
     fund_res = fund_strat.analyze(df, extra_data=fundamentals).to_dict()
-    decision = calculate_final_decision(tech_res, fund_res)
+    decision = calculate_final_decision(tech_res, fund_res, backtest_info)
 
     return {
         "meta": {"source": source_used, "ticker": stock_id, "name": stock_name},
         "price_data": {
             "latest_close": float(df['Close'].iloc[-1]),
             "volume": int(df['Volume'].iloc[-1]),
-            "pct_change": 0.0 # 可由前端計算
         },
         "strategies": {"Technical": tech_res, "Fundamental": fund_res},
+        "backtest_insight": backtest_info, 
         "final_decision": decision
     }
 
@@ -124,53 +155,43 @@ def generate_moltbot_prompt(data, is_single=False):
         context = json.dumps(data, indent=2, ensure_ascii=False)
         ticker = data['meta']['ticker']
         name = data['meta'].get('name', ticker)
+        
+        bt_info = data.get('backtest_insight')
+        bt_text = ""
+        if bt_info:
+            bt_text = f"""
+### 🏆 歷史回測驗證
+- **最佳參數**: MA {bt_info['fast_ma']} / {bt_info['slow_ma']}
+- **過去三年報酬**: **{bt_info['historical_roi']}%**
+- **解讀**: 此策略有歷史數據支持，請納入評估。
+"""
         header = f"【BMO 深度投資診斷: {name} ({ticker})】"
     else:
         context = json.dumps(data.get("analysis", {}), indent=2, ensure_ascii=False)
         header = "【BMO 機構級量化決策報告】"
+        bt_text = ""
 
     prompt = f"""
 {header}
 時間: {timestamp}
-語言: **繁體中文 (Traditional Chinese)**
-角色: **BMO (QuantMaster)** - 機構級投資顧問。
-風格: 結構清晰、數據導向、風險意識強。
+語言: **繁體中文**
+角色: **BMO** - 數據驅動的量化顧問。
 
---- 任務要求 (Structure) ---
-請根據 Input Data 中的 `raw_data` 與 `final_decision`，嚴格依照以下五大區塊撰寫報告：
+--- 任務要求 ---
+{bt_text}
 
-### 1. 🎯 綜合評級與操作 (Verdict)
-- **核心建議**: 根據 `action` 給出明確指令 (買進/賣出/觀望)。
-- **建議倉位**: `position_size`。
-- **關鍵停損**: 強調 `stop_loss_price`。
-- **信心水準**: `final_confidence` (若低於 0.5 請說明原因)。
+請撰寫報告：
+1. **Verdict**: 給出明確操作建議 (Strong Buy / Buy / Watch)。
+2. **Analysis**: 引用 ROC, RSI, MA 數據。
+3. **Risk**: 若基本面缺失 (PE/PB N/A)，請明確指出風險，並強調 **技術面停損點**。
 
-### 2. 📈 動能與技術分析 (Momentum & Technicals)
-*請引用 `strategies.Technical.raw_data` 中的數據：*
-- **動能指標**: 分析 ROC (14/21日) 與 RSI (14日)。目前動能是增強還是減弱？是否有背離？
-- **均線架構**: 目前價格相對於 MA20 / MA50 / MA200 的位置。是否多頭排列？
-- **位階分析**: **"目前股價位於 52 週低點上方 {data.get('strategies', {}).get('Technical', {}).get('raw_data', {}).get('dist_low_52w_pct', 'N/A')}%"**。
-
-### 3. 🏢 基本面與價值篩選 (Fundamentals & Value)
-- **估值狀態**: 引用 PE (本益比) 與 PB (股價淨值比)。
-- **價值判斷**: 比較 PE 是否 ≤ 10 (低估) 或歷史區間位置。
-- **資料警示**: 若 PE/PB 為 null，必須發出「基本面不透明風險」警示。
-
-### 4. 🌊 市場趨勢與籌碼 (Market Context)
-- **長期趨勢**: 根據 MA200 (年線) 判斷目前是牛市還是熊市。
-- **風險評估**: 基於 `risk_factors` 說明目前最大風險 (是技術面過熱？還是基本面不明？)。
-
-### 5. 💡 BMO 的一句話 (Summary)
-- 用一句話總結這檔股票目前的狀態 (例如：「動能強勁但估值過高，建議短打。」)
-
---- 
 [Input Data]
 {context}
 """
     return prompt
 
 def main():
-    print(f"=== Starting Quant Engine v4.0 (Deep Analysis) ===")
+    print(f"=== Starting Quant Engine v4.2 (Robust Patching) ===")
     report = {"timestamp": datetime.now().isoformat(), "analysis": {}}
     for stock_id in TARGET_STOCKS:
         print(f"Processing {stock_id}...")
