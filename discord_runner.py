@@ -17,7 +17,7 @@ from ai_runner import generate_insight
 # === 互動式視圖 (Buttons) ===
 class ConfirmView(discord.ui.View):
     def __init__(self, ctx, ticker, stock_name):
-        super().__init__(timeout=60) # 60秒後失效
+        super().__init__(timeout=60)
         self.ctx = ctx
         self.ticker = ticker
         self.stock_name = stock_name
@@ -31,7 +31,7 @@ class ConfirmView(discord.ui.View):
         
         await interaction.response.send_message(f"🚀 BMO 啟動！正在為 **{self.stock_name}** 進行深度運算 (含回測優化)...", ephemeral=False)
         self.value = True
-        self.stop() # 停止監聽
+        self.stop()
 
     @discord.ui.button(label="❌ 取消", style=discord.ButtonStyle.red)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -48,7 +48,7 @@ class QuantBot(commands.Bot):
         self.target_channel_id = None
 
     async def on_ready(self):
-        print(f"🤖 BMO Interactive (v5.2) 上線: {self.user.name}")
+        print(f"🤖 BMO Interactive (v5.2.1 Fixed) 上線: {self.user.name}")
         await self.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="!a <代號>"))
         if not self.daily_scan_task.is_running():
             self.daily_scan_task.start()
@@ -58,11 +58,13 @@ class QuantBot(commands.Bot):
         if not self.target_channel_id: return
         channel = self.get_channel(self.target_channel_id)
         if not channel: return
-        # 自動掃描邏輯... (省略以簡化，可沿用舊版)
+        # 自動掃描邏輯...
+        pass 
 
 bot = QuantBot()
 
-async def resolve_ticker_info(ticker_input):
+# [修正] 移除 async，改為普通同步函數 (因為裡面沒有 await)
+def resolve_ticker_info(ticker_input):
     """只查名稱，不跑分析"""
     raw = ticker_input.upper().strip()
     candidates = []
@@ -71,11 +73,9 @@ async def resolve_ticker_info(ticker_input):
     
     for c in candidates:
         name = get_stock_name_zh(c)
-        # 如果名字不是代號本身，代表找到了
         if name != c:
             return c, name
     
-    # 如果都沒找到，回傳第一個候選人
     return candidates[0], candidates[0]
 
 @bot.command(name="analyze", aliases=["a"])
@@ -84,8 +84,13 @@ async def analyze_stock(ctx, ticker: str = None):
         await ctx.send("請輸入代號，例如 `!a 3141`")
         return
         
-    # 1. 快速查找名稱 (不耗時)
-    clean_ticker, stock_name = await asyncio.to_thread(resolve_ticker_info, ticker)
+    # [修正] 因為 resolve_ticker_info 已經是同步函數，且計算很快，直接呼叫即可
+    # 不需要 asyncio.to_thread
+    try:
+        clean_ticker, stock_name = resolve_ticker_info(ticker)
+    except Exception as e:
+        await ctx.send(f"❌ 代號解析錯誤: {e}")
+        return
     
     # 2. 發送確認按鈕
     view = ConfirmView(ctx, clean_ticker, stock_name)
@@ -98,9 +103,9 @@ async def analyze_stock(ctx, ticker: str = None):
     await msg.edit(view=None)
     
     if view.value is True:
-        # 3. 使用者確認了，開始執行耗時任務 (Auto-Optimization)
         try:
-            # 傳入 True 開啟即時優化
+            # 3. 使用者確認了，開始執行耗時任務 (Auto-Optimization)
+            # 這裡 analyze_single_target 是耗時的，所以保留 to_thread
             data = await asyncio.to_thread(analyze_single_target, clean_ticker, True)
             
             if not data:
@@ -122,7 +127,6 @@ async def analyze_stock(ctx, ticker: str = None):
         except Exception as e:
             await ctx.send(f"❌ 系統錯誤: {str(e)}")
 
-# bind 指令略
 @bot.command(name="bind")
 async def bind_channel(ctx):
     bot.target_channel_id = ctx.channel.id
