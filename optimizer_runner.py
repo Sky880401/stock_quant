@@ -4,8 +4,11 @@ import os
 import sys
 import json
 from datetime import datetime
+import logging
 
-# 引用數據模組
+# 靜音 yfinance 的報錯
+logging.getLogger('yfinance').setLevel(logging.CRITICAL)
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from data.data_loader import get_data_provider
 
@@ -17,7 +20,6 @@ class OptimizationStrategy(bt.Strategy):
         self.ma_fast = bt.indicators.SimpleMovingAverage(self.datas[0], period=self.params.fast_period)
         self.ma_slow = bt.indicators.SimpleMovingAverage(self.datas[0], period=self.params.slow_period)
         self.crossover = bt.indicators.CrossOver(self.ma_fast, self.ma_slow)
-
     def next(self):
         price = self.datas[0].close[0]
         if not self.position:
@@ -28,11 +30,10 @@ class OptimizationStrategy(bt.Strategy):
         elif self.crossover < 0:
             self.close()
 
-# [修正] 更強大的數據獲取
 def get_data_hybrid(ticker):
     clean_id = ticker.split('.')[0]
     
-    # 1. FinMind (優先，台股不分上市櫃)
+    # 1. FinMind (優先)
     if clean_id.isdigit():
         try:
             provider = get_data_provider("finmind")
@@ -40,23 +41,26 @@ def get_data_hybrid(ticker):
             if not df.empty and len(df) > 200: return df
         except: pass
         
-    # 2. Yahoo (需區分 TW/TWO)
-    # 我們嘗試兩次：先試傳進來的 (可能是 .TWO)，失敗再試 .TW
-    candidates = [ticker]
+    # 2. Yahoo 混合測試
+    candidates = []
     if clean_id.isdigit():
-        candidates = [f"{clean_id}.TWO", f"{clean_id}.TW"] # 優先試上櫃，再試上市
+        # [修正] 調整順序：先試 .TW (上市)，再試 .TWO (上櫃)
+        candidates = [f"{clean_id}.TW", f"{clean_id}.TWO"]
+    else:
+        candidates = [ticker]
     
     provider = get_data_provider("yfinance")
     for cand in candidates:
         try:
+            # print(f"   Trying {cand}...") # Debug用
             df = provider.get_history(cand, days=1095)
-            if not df.empty and len(df) > 200: return df
+            if not df.empty and len(df) > 200: 
+                return df
         except: continue
             
     return pd.DataFrame()
 
 def find_best_params(ticker):
-    # print(f"🚀 Optimizing {ticker}...")
     df = get_data_hybrid(ticker)
     if df.empty: return None
 
@@ -89,5 +93,3 @@ def find_best_params(ticker):
         "historical_roi": round(best_roi, 2),
         "last_updated": datetime.now().isoformat()
     }
-    
-# main 保持原樣，略
