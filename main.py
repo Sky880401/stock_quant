@@ -17,7 +17,7 @@ FALLBACK_SOURCE = "yfinance"
 OUTPUT_FILE = "data/latest_report.json"
 OUTPUT_MISSION = "data/moltbot_mission.txt"
 
-# ... (保留 fetch_stock_data_smart 與 source_used_name，省略以節省篇幅) ...
+# 1. 數據獲取 (保持原樣，省略細節)
 def fetch_stock_data_smart(stock_id: str):
     clean_id = stock_id.split('.')[0]
     yf_id = stock_id
@@ -31,8 +31,9 @@ def fetch_stock_data_smart(stock_id: str):
     for source_name, provider, target_id in providers:
         try:
             df = provider.get_history(target_id)
-            if not df.empty:
+            if not df.empty and len(df) > 200: # 確保數據夠長
                 fundamentals = provider.get_fundamentals(target_id)
+                # 混合數據補強
                 if (not fundamentals or not fundamentals.get("pe_ratio")) and clean_id.isdigit():
                      yf_funds = get_data_provider(FALLBACK_SOURCE).get_fundamentals(yf_id)
                      if not fundamentals: fundamentals = {}
@@ -50,36 +51,42 @@ def get_stock_name(stock_id: str) -> str:
     try:
         query_id = f"{stock_id}.TW" if stock_id.isdigit() else stock_id
         ticker = yf.Ticker(query_id)
-        # 優先取短名，通常比較乾淨
-        return ticker.info.get('shortName') or ticker.info.get('longName') or stock_id
-    except:
-        return stock_id
+        # 優先取短名 (通常是中文)
+        name = ticker.info.get('shortName') or ticker.info.get('longName') or stock_id
+        # 簡單過濾亂碼或過長英文 (可選)
+        return name
+    except: return stock_id
 
 def calculate_final_decision(tech_res, fund_res):
-    # ... (保持 v3.0 的決策邏輯，省略) ...
+    # 邏輯與 v3.0 相同，計算 final_confidence
     base_confidence = tech_res.get("confidence", 0.0)
     total_penalty = tech_res.get("risk_penalty", 0.0) + fund_res.get("risk_penalty", 0.0)
     final_confidence = max(0.0, base_confidence - total_penalty)
+    
     tech_signal = tech_res.get("signal")
     fund_signal = fund_res.get("signal")
     
     action = "WATCH"
-    position_size = "0%"
-    
+    pos_size = "0%"
+
     if tech_signal == "BUY":
-        if final_confidence >= 0.75: action, position_size = "STRONG BUY", "100% (Full)"
-        elif final_confidence >= 0.5: action, position_size = "BUY (Speculative)", "50% (Half)"
-        else: action, position_size = "WATCH (High Risk)", "0%"
+        if final_confidence >= 0.7: action, pos_size = "STRONG BUY", "80-100%"
+        elif final_confidence >= 0.5: action, pos_size = "BUY (Standard)", "50%"
+        else: action, pos_size = "BUY (Speculative)", "20-30%"
     elif tech_signal == "SELL":
-        if final_confidence >= 0.7: action = "STRONG SELL"
-        else: action = "SELL (Reduce)"
+        if final_confidence >= 0.7: action, pos_size = "STRONG SELL", "0%"
+        else: action, pos_size = "SELL (Reduce)", "0-20%"
+    elif tech_signal == "UNKNOWN":
+        action = "WAIT (Data Insufficient)"
     
-    if tech_signal == "BUY" and fund_signal == "UNKNOWN":
-        action, position_size = "BUY (Technical Only)", "30-50% (Risk Managed)"
+    # 衝突處理
+    if tech_signal == "BUY" and fund_signal == "SELL":
+        action = "NEUTRAL / PROFIT TAKING"
+        pos_size = "Reduce Position"
 
     return {
         "action": action,
-        "position_size": position_size,
+        "position_size": pos_size,
         "final_confidence": round(final_confidence, 2),
         "stop_loss_price": tech_res.get("stop_loss", 0.0),
         "risk_factors": f"Penalty: -{total_penalty}" if total_penalty > 0 else "None"
@@ -104,7 +111,8 @@ def analyze_single_target(stock_id: str):
         "meta": {"source": source_used, "ticker": stock_id, "name": stock_name},
         "price_data": {
             "latest_close": float(df['Close'].iloc[-1]),
-            "volume": int(df['Volume'].iloc[-1])
+            "volume": int(df['Volume'].iloc[-1]),
+            "pct_change": 0.0 # 可由前端計算
         },
         "strategies": {"Technical": tech_res, "Fundamental": fund_res},
         "final_decision": decision
@@ -115,9 +123,8 @@ def generate_moltbot_prompt(data, is_single=False):
     if is_single:
         context = json.dumps(data, indent=2, ensure_ascii=False)
         ticker = data['meta']['ticker']
-        # 這裡的 name 可能是英文，留給 AI 翻譯
-        raw_name = data['meta'].get('name', ticker)
-        header = f"【BMO 即時個股診斷: {ticker}】"
+        name = data['meta'].get('name', ticker)
+        header = f"【BMO 深度投資診斷: {name} ({ticker})】"
     else:
         context = json.dumps(data.get("analysis", {}), indent=2, ensure_ascii=False)
         header = "【BMO 機構級量化決策報告】"
@@ -125,32 +132,45 @@ def generate_moltbot_prompt(data, is_single=False):
     prompt = f"""
 {header}
 時間: {timestamp}
-語言: **繁體中文 (Traditional Chinese)** - 必須嚴格執行。
-角色: **BMO** - 您的台灣在地化量化投資顧問。
+語言: **繁體中文 (Traditional Chinese)**
+角色: **BMO (QuantMaster)** - 機構級投資顧問。
+風格: 結構清晰、數據導向、風險意識強。
 
---- 翻譯與術語轉換指令 (Strict Translation Rules) ---
-1. **股名翻譯**: 若 Input Data 中的股名是英文 (如 "Taiwan Semiconductor..."), 請務必翻譯成台灣通用的中文名稱 (如 "台積電")。
-2. **訊號翻譯**:
-   - BUY -> 買進
-   - SELL -> 賣出
-   - HOLD -> 續抱/觀望
-   - STRONG BUY -> 強力買進
-   - Technical Only -> 僅依技術面
-3. **專有名詞**:
-   - Stop Loss -> 停損點
-   - Position Size -> 建議倉位
+--- 任務要求 (Structure) ---
+請根據 Input Data 中的 `raw_data` 與 `final_decision`，嚴格依照以下五大區塊撰寫報告：
 
---- 任務 ---
-請以 BMO 的口吻撰寫報告。
-開頭範例：「Hi, 我是 BMO。關於 **[中文股名]** ({data.get('meta', {}).get('ticker', '')}) 的分析如下...」
+### 1. 🎯 綜合評級與操作 (Verdict)
+- **核心建議**: 根據 `action` 給出明確指令 (買進/賣出/觀望)。
+- **建議倉位**: `position_size`。
+- **關鍵停損**: 強調 `stop_loss_price`。
+- **信心水準**: `final_confidence` (若低於 0.5 請說明原因)。
 
+### 2. 📈 動能與技術分析 (Momentum & Technicals)
+*請引用 `strategies.Technical.raw_data` 中的數據：*
+- **動能指標**: 分析 ROC (14/21日) 與 RSI (14日)。目前動能是增強還是減弱？是否有背離？
+- **均線架構**: 目前價格相對於 MA20 / MA50 / MA200 的位置。是否多頭排列？
+- **位階分析**: **"目前股價位於 52 週低點上方 {data.get('strategies', {}).get('Technical', {}).get('raw_data', {}).get('dist_low_52w_pct', 'N/A')}%"**。
+
+### 3. 🏢 基本面與價值篩選 (Fundamentals & Value)
+- **估值狀態**: 引用 PE (本益比) 與 PB (股價淨值比)。
+- **價值判斷**: 比較 PE 是否 ≤ 10 (低估) 或歷史區間位置。
+- **資料警示**: 若 PE/PB 為 null，必須發出「基本面不透明風險」警示。
+
+### 4. 🌊 市場趨勢與籌碼 (Market Context)
+- **長期趨勢**: 根據 MA200 (年線) 判斷目前是牛市還是熊市。
+- **風險評估**: 基於 `risk_factors` 說明目前最大風險 (是技術面過熱？還是基本面不明？)。
+
+### 5. 💡 BMO 的一句話 (Summary)
+- 用一句話總結這檔股票目前的狀態 (例如：「動能強勁但估值過高，建議短打。」)
+
+--- 
 [Input Data]
 {context}
 """
     return prompt
 
 def main():
-    print(f"=== Starting Quant Engine v3.2 (Localization) ===")
+    print(f"=== Starting Quant Engine v4.0 (Deep Analysis) ===")
     report = {"timestamp": datetime.now().isoformat(), "analysis": {}}
     for stock_id in TARGET_STOCKS:
         print(f"Processing {stock_id}...")

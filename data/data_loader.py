@@ -1,6 +1,5 @@
 import pandas as pd
 import yfinance as yf
-import requests
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 import logging
@@ -40,17 +39,21 @@ class FinMindProvider(DataProvider):
         except: return pd.DataFrame()
 
     def get_fundamentals(self, stock_id: str) -> dict:
-        # (保持原樣，省略以節省空間)
-        return {}
+        if not self.loader or not stock_id.isdigit(): return {}
+        try:
+            start = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+            end = datetime.now().strftime('%Y-%m-%d')
+            df = self.loader.taiwan_stock_per_pbr(stock_id=stock_id, start_date=start, end_date=end)
+            if not df.empty:
+                latest = df.iloc[-1]
+                return {"pe_ratio": latest.get('PER'), "pb_ratio": latest.get('PBR'), "dividend_yield": latest.get('dividend_yield')}
+            return {}
+        except: return {}
 
-# YFinance Provider (Anti-Block Version)
+# YFinance Provider (Standard Version)
 class YFinanceProvider(DataProvider):
     def __init__(self):
-        # [關鍵優化] 建立偽裝的 Session
-        self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        })
+        pass # [修正] 不再手動建立 Session，交給 yfinance 處理
 
     def _normalize_id(self, stock_id: str) -> str:
         if stock_id.isdigit(): return f"{stock_id}.TW"
@@ -61,13 +64,12 @@ class YFinanceProvider(DataProvider):
         print(f"   [YFinance] Fetching history for {target_id}...")
         
         try:
-            # 傳入 session 進行偽裝
-            ticker = yf.Ticker(target_id, session=self.session)
+            # [修正] 移除 session 參數
+            ticker = yf.Ticker(target_id) 
             df = ticker.history(period=f"{days}d")
             
             if df.empty:
-                # 再次確認是否因為下市
-                print(f"   ⚠️ Warning: No data for {target_id} (Delisted or Blocked?)")
+                print(f"   ⚠️ Warning: No data for {target_id}")
                 return pd.DataFrame()
             
             df.columns = [c.capitalize() for c in df.columns]
@@ -84,7 +86,8 @@ class YFinanceProvider(DataProvider):
     def get_fundamentals(self, stock_id: str) -> dict:
         target_id = self._normalize_id(stock_id)
         try:
-            ticker = yf.Ticker(target_id, session=self.session)
+            # [修正] 移除 session 參數
+            ticker = yf.Ticker(target_id)
             info = ticker.info
             return {
                 "pe_ratio": info.get("trailingPE") or info.get("forwardPE"),
