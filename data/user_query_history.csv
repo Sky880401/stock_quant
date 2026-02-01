@@ -68,3 +68,5 @@ Timestamp          , User    , Ticker  , StockName       , Action           , Co
 2026-02-01 11:11:42,he_sunny,2884.TW,玉山金,HOLD (Neutral),0.5,25.5
 2026-02-01 11:14:54,he_sunny,00830.TW,國泰費城半導體,REDUCE / UNDERWEIGHT,0.31000000000000005,23.45
 2026-02-01 11:16:15,he_sunny,0050.TW,元大台灣50,BUY,0.75,145.67
+2026-02-01 11:28:21,he_sunny,3218.TWO,大學光,BUY,0.69,16.94
+2026-02-01 11:30:16,he_sunny,2618.TW,長榮航,HOLD (Neutral),0.6,30.0

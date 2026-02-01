@@ -169,8 +169,8 @@ async def analyze_stock(ctx, ticker: str = None):
 @bot.command(name="gift")
 @commands.has_permissions(administrator=True)
 async def gift_quota(ctx, member: discord.Member, amount: int):
-    admin_add_quota(member.id, amount)
-    await ctx.send(f"🎁 已為 **{member.display_name}** 補充了 {amount} 次額度！")
+    new_limit = admin_add_quota(member.id, amount)
+    await ctx.send(f"🎁 已為 **{member.display_name}** 增加 {amount} 次額度！\n現在總額度: **{new_limit} 次/天**")
 
 @bot.command(name="bind")
 async def bind_channel(ctx):
