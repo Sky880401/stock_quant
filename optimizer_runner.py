@@ -61,7 +61,7 @@ def get_data_hybrid(ticker):
     return pd.DataFrame()
 
 def run_backtest(strategy_cls, df, **kwargs):
-    if df.empty or len(df) < 100: return -999.0, 0.0, 0
+    if df.empty or len(df) < 100: return -999.0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0
     if not isinstance(df.index, pd.DatetimeIndex): df.index = pd.to_datetime(df.index)
     df = df[~df.index.duplicated(keep='first')].sort_index()
     if df.isnull().values.any(): df = df.fillna(method='ffill').fillna(method='bfill')
@@ -74,6 +74,8 @@ def run_backtest(strategy_cls, df, **kwargs):
     cerebro.broker.setcash(100000.0)
     cerebro.broker.setcommission(commission=0.001425)
     cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
+    cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")  # [新增]
+    cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")  # [新增]
     
     try:
         results = cerebro.run()
@@ -86,8 +88,56 @@ def run_backtest(strategy_cls, df, **kwargs):
         
         win_rate = (won_trades / total_trades * 100) if total_trades > 0 else 0.0
         
-        return roi, win_rate, total_trades
-    except: return -999.0, 0.0, 0
+        # [新增] 計算平均贏損比
+        avg_win_pnl = 0.0
+        avg_loss_pnl = 0.0
+        won_pnl = trade_analysis.get('won', {}).get('pnl', {}).get('total', 0)
+        lost_pnl = abs(trade_analysis.get('lost', {}).get('pnl', {}).get('total', 0))
+        
+        if won_trades > 0:
+            avg_win_pnl = won_pnl / won_trades
+        if (total_trades - won_trades) > 0:
+            avg_loss_pnl = lost_pnl / (total_trades - won_trades)
+        
+        avg_win_ratio = avg_win_pnl / avg_loss_pnl if avg_loss_pnl > 0 else 1.5
+        
+        # [新增] Sharpe比率 (風險調整後報酬)
+        returns_analysis = strat.analyzers.returns.get_analysis()
+        rtot = returns_analysis.get('rtot', 0)
+        
+        # [新增] 最大回撤
+        drawdown_analysis = strat.analyzers.drawdown.get_analysis()
+        max_dd = abs(drawdown_analysis.get('max', {}).get('drawdown', 0.0))
+        
+        # Sharpe簡化計算: ROI / max_dd (高過簡化，但快速)
+        sharpe_approx = roi / max(max_dd, 0.01) if max_dd > 0 else roi * 10
+        
+        return roi, win_rate, total_trades, avg_win_ratio, avg_loss_pnl, max_dd, sharpe_approx, rtot
+    except: 
+        return -999.0, 0.0, 0, 1.5, 1.0, 0.0, 0.0, 0.0
+
+def run_walk_forward_analysis(strategy_cls, df, params, train_ratio=0.8):
+    """
+    樣本外驗證 (Walk-Forward Analysis)
+    - 用前80%訓練，後20%測試
+    - 返回 (in_sample_score, out_of_sample_score)
+    """
+    if len(df) < 100:
+        return 0.0, 0.0
+    
+    split_idx = int(len(df) * train_ratio)
+    train_df = df.iloc[:split_idx]
+    test_df = df.iloc[split_idx:]
+    
+    # In-Sample (訓練集)
+    roi_is, wr_is, trades_is, _, _, dd_is, sharpe_is, _ = run_backtest(strategy_cls, train_df, **params)
+    is_score = roi_is * 0.7 + wr_is * 0.3 - dd_is * 0.1
+    
+    # Out-of-Sample (測試集)
+    roi_os, wr_os, trades_os, _, _, dd_os, sharpe_os, _ = run_backtest(strategy_cls, test_df, **params)
+    os_score = roi_os * 0.7 + wr_os * 0.3 - dd_os * 0.1
+    
+    return is_score, os_score
 
 def find_best_params(ticker):
     df = get_data_hybrid(ticker)
@@ -97,15 +147,45 @@ def find_best_params(ticker):
 
     def test_strat(name, cls, params_list, fixed_params={}):
         best_roi = -999; best_wr = 0; best_trades = 0; best_p = None
+        best_avg_ratio = 1.5; best_avg_loss = 1.0
+        best_os_score = -999
+        best_max_dd = 999  # [新增] 最小化最大回撤
+        best_sharpe = -999  # [新增] 最大化Sharpe
+        
         for p in params_list:
             run_params = {**p, **fixed_params}
-            roi, wr, trades = run_backtest(cls, df, **run_params)
+            roi, wr, trades, avg_ratio, avg_loss, max_dd, sharpe, rtot = run_backtest(cls, df, **run_params)
             
-            # [邏輯優化] 優先選 ROI 高的，但如果 ROI 差不多，選勝率高的
-            if roi > best_roi:
-                best_roi = roi; best_wr = wr; best_trades = trades; best_p = p
+            # [新增] Walk-Forward驗證
+            is_score, os_score = run_walk_forward_analysis(cls, df, run_params, train_ratio=0.8)
+            
+            # [優化邏輯] 綜合多個指標的評分
+            # IS/OS均衡 + 風險調整 + Sharpe比率
+            combined_score = (is_score * 0.6 + os_score * 0.4) * (1.0 - max_dd / 50.0)  # 懲罰高回撤
+            
+            if combined_score > best_roi:
+                best_roi = combined_score
+                best_wr = wr
+                best_trades = trades
+                best_p = p
+                best_avg_ratio = avg_ratio
+                best_avg_loss = avg_loss
+                best_os_score = os_score
+                best_max_dd = max_dd
+                best_sharpe = sharpe
         
-        return {"type": name, "roi": best_roi, "win_rate": best_wr, "trades": best_trades, "params": best_p}
+        return {
+            "type": name,
+            "roi": best_roi,
+            "win_rate": best_wr,
+            "trades": best_trades,
+            "params": best_p,
+            "avg_win_ratio": best_avg_ratio,
+            "avg_loss_pnl": best_avg_loss,
+            "out_of_sample_score": best_os_score,
+            "max_drawdown": round(best_max_dd, 2),  # [新增]
+            "sharpe_ratio": round(best_sharpe, 2)   # [新增]
+        }
 
     # Round 1: Trend
     results.append(test_strat("Trend (MA)", TrendStrategy, [{'fast_period': f, 'slow_period': s} for f, s in [(5,10), (10,20), (20,60), (60,200)]]))
@@ -133,7 +213,9 @@ def find_best_params(ticker):
         "strategy_type": winner['type'],
         "params": winner['params'],
         "historical_roi": round(winner['roi'], 2),
-        "win_rate": winner['win_rate'] if winner['trades'] > 0 else 0, # 數字
-        "win_rate_display": win_rate_display, # 字串
+        "win_rate": winner['win_rate'] if winner['trades'] > 0 else 0,
+        "win_rate_display": win_rate_display,
+        "avg_win_ratio": round(winner['avg_win_ratio'], 2),
+        "avg_loss_ratio": 1.0,  # 標準化損失為1.0用於Kelly計算
         "last_updated": datetime.now().isoformat()
     }

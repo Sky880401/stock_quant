@@ -103,6 +103,25 @@ def calculate_atr(df, period=14):
         return atr
     except: return df['Close'].iloc[-1] * 0.03
 
+def calculate_kelly_position(win_rate, avg_win_ratio, avg_loss_ratio, max_position=100):
+    """
+    Kelly準則資金管理：kelly_fraction = (p * b - q) / b
+    其中: p=勝率, b=贏損比, q=敗率(1-p)
+    使用Kelly的25% (四分之一Kelly) 保守策略
+    """
+    if win_rate <= 0 or win_rate >= 1:
+        return max_position * 0.5
+    if avg_win_ratio <= 0 or avg_loss_ratio <= 0:
+        return max_position * 0.5
+    
+    loss_rate = 1.0 - win_rate
+    b = avg_win_ratio / avg_loss_ratio
+    kelly_fraction = (win_rate * b - loss_rate) / b
+    kelly_fraction = max(0, min(kelly_fraction, 0.25))
+    conservative_kelly = kelly_fraction * 0.25
+    kelly_position = conservative_kelly * max_position
+    return max(5, min(kelly_position, max_position))
+
 def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res, backtest_info=None, fundamentals=None, df=None):
     current_price = df['Close'].iloc[-1]
     # ... (變數初始化) ...
@@ -121,32 +140,52 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
 
     score = 0.5 
     
-    # [策略計分區塊 - 保持 V10.0 邏輯]
+    # [優化] 根據市場狀態動態調整信號權重
+    # 基礎權重
+    tech_weight = 0.3      # 技術面權重
+    chip_weight = 0.1      # 籌碼面權重
+    fund_weight = 0.1      # 基本面權重
+    
+    # 根據波動率調整
+    if atr_pct > 4.0:
+        # 高波動時：重視超買超賣信號
+        if strategy_type == "Reversion (RSI)":
+            tech_weight = 0.4
+        chip_weight = 0.15
+        fund_weight = 0.05
+    elif atr_pct < 1.5:
+        # 低波動時：增加基本面比重
+        tech_weight = 0.25
+        fund_weight = 0.15
+        chip_weight = 0.1
+    
+    # [策略計分區塊 - 動態權重版本]
     if strategy_type == "Reversion (RSI)":
-        if rsi_val <= 30: score += 0.3
-        elif rsi_val >= 70: score -= 0.3
-        elif rsi_val < 45: score += 0.1
-        elif rsi_val > 55: score -= 0.1
+        if rsi_val <= 30: score += tech_weight
+        elif rsi_val >= 70: score -= tech_weight
+        elif rsi_val < 45: score += tech_weight * 0.3
+        elif rsi_val > 55: score -= tech_weight * 0.3
     elif strategy_type == "Momentum (MACD)":
-        if "BUY" in macd_status: score += 0.3
-        elif "SELL" in macd_status: score -= 0.3
+        if "BUY" in macd_status: score += tech_weight
+        elif "SELL" in macd_status: score -= tech_weight
     elif strategy_type == "Swing (KD)":
-        if kd_res['signal'] == "BUY": score += 0.3
-        elif kd_res['signal'] == "SELL": score -= 0.3
+        if kd_res['signal'] == "BUY": score += tech_weight
+        elif kd_res['signal'] == "SELL": score -= tech_weight
     elif strategy_type == "PriceAction (Pullback)":
         ma20 = df['Close'].rolling(20).mean().iloc[-1]
         dist = (current_price - ma20) / ma20
         is_red_k = df['Close'].iloc[-1] > df['Open'].iloc[-1]
-        if abs(dist) < 0.02 and is_red_k: score += 0.4
-        elif dist < -0.05: score -= 0.3
-    else: # Trend
-        if tech_signal == "BUY": score += 0.3
-        elif tech_signal == "SELL": score -= 0.3
+        if abs(dist) < 0.02 and is_red_k: score += tech_weight * 1.3
+        elif dist < -0.05: score -= tech_weight
 
-    if chip_res['score'] > 0: score += 0.1
-    elif chip_res['score'] < 0: score -= 0.1
-    if fund_signal == "BUY": score += 0.1
-    elif fund_signal == "SELL": score -= 0.1
+    else: # Trend
+        if tech_signal == "BUY": score += tech_weight
+        elif tech_signal == "SELL": score -= tech_weight
+
+    if chip_res['score'] > 0: score += chip_weight
+    elif chip_res['score'] < 0: score -= chip_weight
+    if fund_signal == "BUY": score += fund_weight
+    elif fund_signal == "SELL": score -= fund_weight
 
     risk_flags = []
     if bollinger_res['signal'] == "SELL":
@@ -163,12 +202,26 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
     elif score >= 0.25: action = "REDUCE / UNDERWEIGHT"
     else: action = "EXIT / SELL"
 
-    base_pos = int(score * 100)
-    if atr_pct < 2.0: pos_limit = 100
-    elif atr_pct < 4.0: pos_limit = 60
-    else: pos_limit = 30
-    final_pos = min(base_pos, pos_limit)
-    if final_pos < 10: final_pos = 0 
+    # [優化] 使用Kelly準則計算頭寸，結合ATR波動率限制
+    base_kelly_position = 50  # Kelly基礎頭寸
+    
+    # 從backtest_info提取平均贏損比
+    avg_win_ratio = backtest_info.get("avg_win_ratio", 1.5) if backtest_info else 1.5
+    avg_loss_ratio = backtest_info.get("avg_loss_ratio", 1.0) if backtest_info else 1.0
+    
+    # 計算Kelly建議頭寸
+    kelly_position = calculate_kelly_position(win_rate / 100 if win_rate > 1 else win_rate, 
+                                             avg_win_ratio, avg_loss_ratio, base_kelly_position)
+    
+    # 根據ATR調整Kelly頭寸
+    if atr_pct < 2.0: atm_limit = 1.0  # 低波動可用滿Kelly
+    elif atr_pct < 3.0: atm_limit = 0.8
+    elif atr_pct < 4.0: atm_limit = 0.6
+    else: atm_limit = 0.3  # 高波動大幅降低
+    
+    final_pos = int(kelly_position * atm_limit)
+    if final_pos < 10 and "BUY" in action: final_pos = 10
+    elif "EXIT" in action or "REDUCE" in action: final_pos = 0 
     
     if action in ["EXIT / SELL", "REDUCE / UNDERWEIGHT"]:
         pos_str = "0-10% (出清/減碼)"
