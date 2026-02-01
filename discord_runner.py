@@ -17,6 +17,8 @@ from ai_runner import generate_insight
 from utils.logger import log_info, log_error
 from utils.history_recorder import record_user_query
 from utils.quota_manager import check_quota_status, deduct_quota, admin_add_quota
+from utils.user_analytics import create_ranking_embed
+from utils.period_backtest import load_period_results, get_predefined_periods
 
 # Load stock map
 STOCK_MAP = {}
@@ -171,6 +173,96 @@ async def analyze_stock(ctx, ticker: str = None):
 async def gift_quota(ctx, member: discord.Member, amount: int):
     new_limit = admin_add_quota(member.id, amount)
     await ctx.send(f"🎁 已為 **{member.display_name}** 增加 {amount} 次額度！\n現在總額度: **{new_limit} 次/天**")
+
+@bot.command(name="hotlist", aliases=["hotrank", "rank"])
+async def show_hotlist(ctx):
+    """
+    顯示每日熱搜排行榜
+    """
+    try:
+        await ctx.defer()
+        embeds = await asyncio.to_thread(create_ranking_embed)
+        await ctx.send(embeds=embeds)
+    except Exception as e:
+        log_error(f"熱搜排行生成失敗: {e}")
+        await ctx.send(f"❌ 生成排行榜失敗: {str(e)}")
+
+@bot.command(name="period", aliases=["backtest_period", "bp"])
+async def show_period_analysis(ctx, strategy: str = None):
+    """
+    顯示特定時間段的回測結果
+    使用: !period [strategy_name]
+    例: !period TrendStrategy
+    """
+    try:
+        await ctx.defer()
+        
+        if not strategy:
+            # 显示可用的分析结果
+            results = await asyncio.to_thread(load_period_results)
+            if not results:
+                await ctx.send("❌ 沒有可用的時間段分析結果\n請先執行回測分析: !analyze <ticker>")
+                return
+            
+            strategies_list = list(results.keys())
+            embed = discord.Embed(
+                title="📊 可用的策略分析",
+                description=f"共 {len(strategies_list)} 個策略",
+                color=discord.Color.blue()
+            )
+            
+            text = ""
+            for i, strat_name in enumerate(strategies_list[:10], 1):
+                text += f"{i}. `{strat_name}`\n"
+            
+            embed.add_field(name="策略列表", value=text or "無", inline=False)
+            embed.set_footer(text="使用 !period <strategy_name> 查看詳細分析")
+            
+            await ctx.send(embed=embed)
+        else:
+            # 显示特定策略的分析结果
+            result = await asyncio.to_thread(load_period_results, strategy)
+            
+            if not result or 'error' in result:
+                await ctx.send(f"❌ 找不到策略 `{strategy}` 的分析結果")
+                return
+            
+            # 创建embed显示结果
+            embed = discord.Embed(
+                title=f"📈 {strategy} 時間段分析",
+                description=f"分析時間: {result.get('analysis_time', 'N/A')}",
+                color=discord.Color.green()
+            )
+            
+            # 摘要信息
+            summary = result.get('summary', {})
+            summary_text = f"""
+📊 **統計摘要**
+平均ROI: **{summary.get('avg_roi', 'N/A')}%**
+平均勝率: **{summary.get('avg_win_rate', 'N/A')}%**
+ROI穩定性(標準差): **{summary.get('roi_std', 'N/A')}**
+最佳時期: **{summary.get('best_period', 'N/A')}**
+最差時期: **{summary.get('worst_period', 'N/A')}**
+"""
+            embed.add_field(name="摘要", value=summary_text.strip(), inline=False)
+            
+            # 時期詳情
+            periods = result.get('periods', [])
+            if periods:
+                periods_text = ""
+                for p in periods[:5]:  # 只显示前5个
+                    if 'error' in p:
+                        periods_text += f"❌ {p.get('period', 'Unknown')}: {p.get('error', 'Error')}\n"
+                    else:
+                        periods_text += f"• **{p.get('period')}**: ROI {p.get('roi')}% | 勝率 {p.get('win_rate')}% | 交易數 {p.get('total_trades')}\n"
+                
+                embed.add_field(name="時期表現", value=periods_text or "無", inline=False)
+            
+            await ctx.send(embed=embed)
+    
+    except Exception as e:
+        log_error(f"時間段分析顯示失敗: {e}")
+        await ctx.send(f"❌ 顯示分析結果失敗: {str(e)}")
 
 @bot.command(name="bind")
 async def bind_channel(ctx):

@@ -16,6 +16,7 @@ from strategies.price_action.pullback_strategy import PullbackStrategy
 from utils.plotter import generate_stock_chart
 from optimizer_runner import find_best_params
 from utils.logger import log_info, log_warn, log_error
+from strategies.ml_models import create_predictor
 
 # ... (Helper functions 保持原樣) ...
 # ... get_stock_name_zh, fetch_stock_data_smart, analyze_chip, calculate_macd_signal, calculate_atr ...
@@ -186,6 +187,26 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
     elif chip_res['score'] < 0: score -= chip_weight
     if fund_signal == "BUY": score += fund_weight
     elif fund_signal == "SELL": score -= fund_weight
+
+    # [新增] 混合预测模型辅助信号
+    try:
+        predictor = create_predictor('adaptive')
+        ml_result = predictor.predict(df)
+        ml_action = ml_result.get('action', 'HOLD')
+        ml_confidence = ml_result.get('confidence', 0.0)
+        
+        # ML信号权重(10%)
+        ml_weight = 0.1
+        if ml_action == "BUY" and ml_confidence > 0.6:
+            score += ml_weight * min(ml_confidence, 1.0)
+            log_info(f"ML辅助信号: BUY (置信度{ml_confidence:.2f})")
+        elif ml_action == "SELL" and ml_confidence > 0.6:
+            score -= ml_weight * min(ml_confidence, 1.0)
+            log_info(f"ML辅助信号: SELL (置信度{ml_confidence:.2f})")
+        else:
+            log_info(f"ML辅助信号: {ml_action} (置信度{ml_confidence:.2f})")
+    except Exception as e:
+        log_warn(f"ML模型调用失败: {str(e)}")
 
     risk_flags = []
     if bollinger_res['signal'] == "SELL":
