@@ -14,11 +14,12 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 load_dotenv(dotenv_path=Path(PROJECT_ROOT) / '.env', override=True)
 
-from main import analyze_single_target, generate_moltbot_prompt, get_stock_name_zh, TARGET_STOCKS
+from main import analyze_single_target, generate_moltbot_prompt, get_stock_name_zh, TARGET_STOCKS, fetch_stock_data_smart
 from ai_runner import generate_insight
 from utils.model_config import get_model, set_model, AVAILABLE_MODELS
 from utils.logger import log_info, log_error
 from utils.history_recorder import record_user_query
+from utils.prediction_log import log_prediction, backfill_matured, accuracy_summary
 from utils.quota_manager import check_quota_status, deduct_quota, admin_add_quota
 from utils.user_analytics import create_ranking_embed
 from utils.period_backtest import load_period_results, get_predefined_periods
@@ -83,8 +84,17 @@ class QuantBot(commands.Bot):
 
     @tasks.loop(time=time(hour=6, minute=0, tzinfo=timezone.utc))
     async def daily_scan_task(self):
-        if not self.target_channel_id: return
-        pass 
+        # P1 閉環：每日回填到期預測的實際結果
+        try:
+            closed, checked = await asyncio.to_thread(backfill_matured, _latest_price)
+            if closed:
+                log_info(f"📈 預測回填：{checked} 筆到期，{closed} 筆已結算")
+                if self.target_channel_id:
+                    ch = self.get_channel(self.target_channel_id)
+                    if ch:
+                        await ch.send(f"📈 已結算 {closed} 筆到期預測，使用 `!accuracy` 查看最新命中率。")
+        except Exception as e:
+            log_error(f"預測回填失敗: {e}")
 
 bot = QuantBot()
 
@@ -149,6 +159,14 @@ async def analyze_stock(ctx, ticker: str = None):
             dec = data['final_decision']
             roi = data['backtest_insight']['historical_roi'] if data['backtest_insight'] else "N/A"
             record_user_query(ctx.author.name, data['meta']['ticker'], data['meta']['name'], dec['action'], dec['final_confidence'], roi)
+
+            # P1 預測日誌：存下這次判斷，等 N 日後回填實際結果算命中率
+            strat_type = (data.get('backtest_insight') or {}).get('strategy_type', 'N/A')
+            log_prediction(
+                ticker=data['meta']['ticker'], name=data['meta']['name'],
+                action=dec['action'], confidence=dec.get('final_confidence'),
+                strategy=strat_type, entry_price=data['price_data']['latest_close'],
+            )
 
             prompt = generate_moltbot_prompt(data, is_single=True)
             ai_response = await asyncio.to_thread(generate_insight, prompt)
@@ -788,6 +806,47 @@ async def select_model(ctx):
     current = get_model()
     view = ModelSelectView(ctx.author.id)
     await ctx.send(f"🧠 目前模型：`{current}`\n請選擇新的交談模型：", view=view)
+
+
+def _latest_price(ticker):
+    """給預測回填用：回傳該股最新收盤價，失敗回 None。"""
+    try:
+        res = fetch_stock_data_smart(ticker)
+        if res.get("status") == "error":
+            return None
+        return float(res["df"]["Close"].iloc[-1])
+    except Exception:
+        return None
+
+
+@bot.command(name="accuracy", aliases=["acc", "winrate"])
+async def show_accuracy(ctx):
+    """顯示 BMO 歷史預測命中率（P1 閉環）。"""
+    try:
+        await ctx.defer()
+        s = await asyncio.to_thread(accuracy_summary)
+        if s["closed"] == 0:
+            await ctx.send(
+                f"📊 預測命中率\n目前尚無已結算的預測（{s['open']} 筆等待到期約一個月）。\n"
+                f"系統需累積時間才有勝率，這是正常的。"
+            )
+            return
+        lines = [
+            "📊 BMO 歷史預測命中率",
+            f"整體命中率：{s['hit_rate']}%（已結算 {s['closed']} 筆，{s['open']} 筆待到期）",
+            f"平均報酬：{s['avg_return']}%",
+        ]
+        if s["by_strategy"]:
+            lines.append("")
+            lines.append("各策略：")
+            for b in s["by_strategy"][:6]:
+                lines.append(f"{b['strategy']}：{b['rate']}%（{b['hits']}/{b['n']}）")
+        lines.append("")
+        lines.append("註：命中＝看多後實際漲、看空後實際跌。合理目標 53-57%。")
+        await ctx.send("\n".join(lines))
+    except Exception as e:
+        log_error(f"!accuracy 失敗: {e}")
+        await ctx.send(f"❌ 查詢命中率失敗: {str(e)}")
 
 
 @bot.command(name="bind")
