@@ -779,7 +779,7 @@ class ModelSelectView(discord.ui.View):
         self.add_item(ModelSelect(owner_id))
 
 
-@bot.command(name="model", aliases=["models", "setmodel"])
+@bot.command(name="model", aliases=["setmodel"])
 async def select_model(ctx):
     """切換 AI 交談模型（限 bot 擁有者本人）。"""
     if not await bot.is_owner(ctx.author):
