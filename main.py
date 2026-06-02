@@ -13,6 +13,7 @@ from strategies.indicators.valuation_strategy import ValuationStrategy
 from strategies.indicators.bollinger_strategy import BollingerStrategy
 from strategies.indicators.kd_strategy import KDAnalyzer
 from strategies.price_action.pullback_strategy import PullbackStrategy
+from strategies.indicators.institutional_flow import InstitutionalFlowStrategy
 from utils.plotter import generate_stock_chart
 from optimizer_runner import find_best_params
 from utils.logger import log_info, log_warn, log_error
@@ -141,7 +142,7 @@ def calculate_kelly_position(win_rate, avg_win_ratio, avg_loss_ratio, max_positi
     kelly_position = conservative_kelly * max_position
     return max(5, min(kelly_position, max_position))
 
-def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res, backtest_info=None, fundamentals=None, df=None):
+def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res, backtest_info=None, fundamentals=None, df=None, inst_res=None):
     current_price = df['Close'].iloc[-1]
     # ... (變數初始化) ...
     tech_signal = tech_res.get("signal")
@@ -177,6 +178,15 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
         tech_weight = 0.25
         fund_weight = 0.15
         chip_weight = 0.1
+
+    # [P4 動態權重] 依該策略 P1 累積的真實命中率調整技術面話語權
+    # （樣本不足時 multiplier=1.0，隨 P1 結算自動生效）
+    try:
+        from utils.strategy_weights import get_strategy_multiplier
+        p4_mult, p4_src = get_strategy_multiplier(strategy_type)
+        tech_weight *= p4_mult
+    except Exception:
+        p4_mult, p4_src = 1.0, "預設"
     
     # [策略計分區塊 - 動態權重版本]
     if strategy_type == "Reversion (RSI)":
@@ -205,6 +215,14 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
     elif chip_res['score'] < 0: score -= chip_weight
     if fund_signal == "BUY": score += fund_weight
     elif fund_signal == "SELL": score -= fund_weight
+
+    # [新增] 法人籌碼動能策略（用 confidence 調節強度，併入籌碼面權重）
+    if inst_res:
+        inst_w = 0.12
+        if inst_res.get("signal") == "BUY":
+            score += inst_w * max(0.4, inst_res.get("confidence", 0.5))
+        elif inst_res.get("signal") == "SELL":
+            score -= inst_w * max(0.4, inst_res.get("confidence", 0.5))
 
     # [新增] 混合预测模型辅助信号
     try:
@@ -295,7 +313,9 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
         "final_confidence": round((100-risk_score)/100, 2) if 'risk_score' in locals() else score,
         "risk_factors": " | ".join(risk_flags) if risk_flags else "Low",
         "chip_insight": chip_res['reason'],
+        "inst_insight": (inst_res or {}).get('reason', ''),
         "tech_insight": f"RSI={rsi_val:.1f}, KD={kd_res['signal']}, MACD={macd_status}",
+        "p4_weight": f"{p4_mult:.2f}x ({p4_src})",
         # [修改] 強制四捨五入到小數點第二位
         "stop_loss_price": round(key_level_price, 2),
         "stop_loss_desc": key_level_desc,
@@ -332,15 +352,17 @@ def analyze_single_target(stock_id: str, run_optimization_if_missing: bool = Fal
     fund_strat = ValuationStrategy()
     boll_strat = BollingerStrategy()
     kd_strat = KDAnalyzer()
-    
+    inst_strat = InstitutionalFlowStrategy()
+
     # 執行分析
     tech_res = tech_strat.analyze(df, extra_data=fundamentals).to_dict()
     fund_res = fund_strat.analyze(df, extra_data=fundamentals).to_dict()
     chip_res = analyze_chip(df)
     boll_res = boll_strat.analyze(df)
     kd_res = kd_strat.analyze(df)
-    
-    decision = calculate_final_decision(tech_res, fund_res, chip_res, boll_res, kd_res, backtest_info, fundamentals, df)
+    inst_res = inst_strat.analyze(df).to_dict()
+
+    decision = calculate_final_decision(tech_res, fund_res, chip_res, boll_res, kd_res, backtest_info, fundamentals, df, inst_res=inst_res)
 
     # P2 多源資料：新聞情緒（零 API 成本詞典）+ 融資融券趨勢
     news_res = {}; margin_res = {}
@@ -364,7 +386,7 @@ def analyze_single_target(stock_id: str, run_optimization_if_missing: bool = Fal
     return {
         "meta": {"source": res["source"], "ticker": correct_ticker, "name": stock_name},
         "price_data": {"latest_close": float(df['Close'].iloc[-1]), "volume": int(df['Volume'].iloc[-1])},
-        "strategies": {"Technical": tech_res, "Fundamental": fund_res, "Chip": chip_res},
+        "strategies": {"Technical": tech_res, "Fundamental": fund_res, "Chip": chip_res, "Institutional": inst_res},
         "sentiment": {"news": news_res, "margin": margin_res},
         "profit_space": profit_space,
         "backtest_insight": backtest_info,
