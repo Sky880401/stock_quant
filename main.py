@@ -52,6 +52,10 @@ def fetch_stock_data_smart(stock_id: str):
                 yf_provider = get_data_provider(FALLBACK_SOURCE)
                 df = yf_provider.get_history(current_id)
             if df.empty: last_error = "查無數據"; continue
+            # 丟掉 Close 為 NaN 的列（FinMind 常回傳今日未成交/暫停交易的空白列，
+            # 會導致 latest_close、RSI 變 nan，AI 拿不到價格就亂編）
+            df = df[df['Close'].notna()]
+            if df.empty: last_error = "查無有效收盤價"; continue
             if len(df) < 60: last_error = "數據不足"; continue
             fundamentals = {}
             try: fundamentals = provider.get_fundamentals(clean_id)
@@ -395,6 +399,9 @@ def generate_moltbot_prompt(data, is_single=False):
     prompt = f"""
 【BMO 專業投資評鑑: {name} ({ticker})】
 時間: {timestamp}
+
+⚠️ 鐵則：**只能引用 [Input Data] 裡實際出現的數字**（現價、停損價、勝率、籌碼、報酬等）。
+嚴禁自行編造或臆測任何價位/數據。若某欄位是 nan、缺失或 N/A，就明白寫「數據缺失，不評估」，不要用記憶中的歷史價格填補。
 
 --- 分析指引 ---
 {guidance}
