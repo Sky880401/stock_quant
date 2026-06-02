@@ -11,7 +11,7 @@ env_path = Path(PROJECT_ROOT) / '.env'
 load_dotenv(dotenv_path=env_path, override=True)
 
 # === 配置 ===
-MODEL_NAME = "meta/llama-3.1-405b-instruct"
+MODEL_NAME = "meta/llama-3.3-70b-instruct"
 
 def get_nvidia_client():
     """初始化 NVIDIA 客戶端"""
