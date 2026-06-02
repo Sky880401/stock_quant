@@ -1,10 +1,23 @@
-Flask
-line-bot-sdk
-python-dotenv
-requests
+# ── 核心資料/運算 ───────────────────────────────
 pandas
 numpy
-beautifulsoup4
-FinMind
+matplotlib
 mplfinance
 backtrader
+TA-Lib          # ⚠️ 需先裝系統函式庫：Debian `apt install ta-lib`（或自行編譯），否則 pip 會失敗
+yfinance
+FinMind
+beautifulsoup4
+requests
+python-dotenv
+
+# ── AI 推論 ─────────────────────────────────────
+openai
+langchain-nvidia-ai-endpoints
+
+# ── Discord（主要平台）──────────────────────────
+discord.py
+
+# ── LINE（輔助平台，Discord-only 部署可不裝）─────
+line-bot-sdk
+Flask
