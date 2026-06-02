@@ -72,15 +72,29 @@ def fetch_stock_data_smart(stock_id: str):
 
 def analyze_chip(df):
     if 'Foreign' not in df.columns: return {"score": 0, "status": "Neutral", "reason": "無籌碼"}
-    df['Foreign'] = df['Foreign'].fillna(0)
     recent = df.tail(5)
-    foreign_sum = recent['Foreign'].sum()
-    score = 0; status = "Neutral"; reasons = []
-    if foreign_sum > 1000: score+=1; reasons.append(f"外資累積買超 {int(foreign_sum/1000)}k"); status="Bullish"
-    elif foreign_sum < -1000: score-=1; reasons.append(f"外資累積賣超 {int(abs(foreign_sum)/1000)}k"); status="Bearish"
-    else: reasons.append("外資觀望"); status="Neutral"
-    if (df['Close'].iloc[-1] > df['Close'].iloc[-5]) and foreign_sum < 0: reasons.append("⚠️價漲量縮"); score-=0.5
-    return {"score": score, "status": status, "reason": " | ".join(reasons)}
+    for col in ('Foreign', 'Trust', 'Dealer'):
+        if col not in df.columns:
+            df[col] = 0
+    foreign_sum = recent['Foreign'].fillna(0).sum()
+    trust_sum = recent['Trust'].fillna(0).sum()
+    dealer_sum = recent['Dealer'].fillna(0).sum()
+    score = 0; reasons = []
+    # 外資（量大、趨勢主導）
+    if foreign_sum > 1000: score += 1; reasons.append(f"外資買超 {int(foreign_sum/1000)}k")
+    elif foreign_sum < -1000: score -= 1; reasons.append(f"外資賣超 {int(abs(foreign_sum)/1000)}k")
+    # 投信（台股強短線訊號，作帳/認養）
+    if trust_sum > 500: score += 0.7; reasons.append(f"投信買超 {int(trust_sum/1000)}k")
+    elif trust_sum < -500: score -= 0.7; reasons.append(f"投信賣超 {int(abs(trust_sum)/1000)}k")
+    # 自營商（短線指標，權重低）
+    if dealer_sum > 1000: score += 0.3; reasons.append("自營偏多")
+    elif dealer_sum < -1000: score -= 0.3; reasons.append("自營偏空")
+    if not reasons: reasons.append("三大法人觀望")
+    # 價漲但法人合計賣超 → 背離警訊
+    if (df['Close'].iloc[-1] > df['Close'].iloc[-5]) and (foreign_sum + trust_sum) < 0:
+        reasons.append("⚠️價漲法人卻賣超(背離)"); score -= 0.5
+    status = "Bullish" if score > 0.5 else ("Bearish" if score < -0.5 else "Neutral")
+    return {"score": round(score, 2), "status": status, "reason": " | ".join(reasons)}
 
 def calculate_macd_signal(df):
     try:
@@ -323,13 +337,24 @@ def analyze_single_target(stock_id: str, run_optimization_if_missing: bool = Fal
     kd_res = kd_strat.analyze(df)
     
     decision = calculate_final_decision(tech_res, fund_res, chip_res, boll_res, kd_res, backtest_info, fundamentals, df)
+
+    # P2 多源資料：新聞情緒（零 API 成本詞典）+ 融資融券趨勢
+    news_res = {}; margin_res = {}
+    try:
+        from crawlers.market_data import news_sentiment, margin_trend
+        news_res = news_sentiment(correct_ticker)
+        margin_res = margin_trend(correct_ticker)
+    except Exception as e:
+        log_info(f"P2 多源資料抓取略過: {e}")
+
     chart_params = backtest_info.get("params", {}) if backtest_info else {}
     chart_path = generate_stock_chart(stock_name, df, strategy_params=chart_params)
     return {
         "meta": {"source": res["source"], "ticker": correct_ticker, "name": stock_name},
         "price_data": {"latest_close": float(df['Close'].iloc[-1]), "volume": int(df['Volume'].iloc[-1])},
         "strategies": {"Technical": tech_res, "Fundamental": fund_res, "Chip": chip_res},
-        "backtest_insight": backtest_info, 
+        "sentiment": {"news": news_res, "margin": margin_res},
+        "backtest_insight": backtest_info,
         "final_decision": decision,
         "chart_path": chart_path
     }
@@ -380,7 +405,9 @@ def generate_moltbot_prompt(data, is_single=False):
 2. **🧠 決策邏輯**: 
    - 解釋為何選擇 {data['backtest_insight'].get('strategy_type')}。
    - 分析目前技術面多空。
-3. **⛔ 風險管理**: 
+3. **🔍 籌碼與消息面**:
+   - 根據 sentiment 欄位解讀三大法人籌碼(Chip)、融資融券(margin)、新聞情緒(news)，三者是否與技術面同向或背離。
+4. **⛔ 風險管理**:
    - 說明波動率風險與價位防守邏輯。
 
 [Input Data]
