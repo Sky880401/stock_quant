@@ -870,6 +870,49 @@ async def show_accuracy(ctx):
         await ctx.send(f"❌ 查詢命中率失敗: {str(e)}")
 
 
+def _run_walk_forward(ticker):
+    from utils.walk_forward import walk_forward
+    from strategies.indicators.ma_crossover import MACrossoverStrategy
+    from strategies.indicators.institutional_flow import InstitutionalFlowStrategy
+    res = fetch_stock_data_smart(ticker)
+    if res.get("status") == "error":
+        return None
+    df = res["df"]
+    return {
+        "MA交叉": walk_forward(MACrossoverStrategy(), df),
+        "法人籌碼動能": walk_forward(InstitutionalFlowStrategy(), df, min_bars=30),
+    }
+
+
+@bot.command(name="validate", aliases=["wf", "backtest_wf"])
+async def validate_strategy(ctx, ticker: str = None):
+    """P5 walk-forward 驗證：對某股做樣本外回測，揭露策略穩定性/過擬合。"""
+    if not ticker:
+        await ctx.send("用法：`!validate 2330`（對該股跑樣本外驗證）")
+        return
+    try:
+        await ctx.defer()
+        clean, name = resolve_ticker_info(ticker)
+        out = await asyncio.to_thread(_run_walk_forward, clean)
+        if not out:
+            await ctx.send(f"❌ 抓不到 {ticker} 的資料")
+            return
+        lines = [f"🔬 walk-forward 樣本外驗證：{name} ({clean})", ""]
+        for strat, r in out.items():
+            if r.get("insufficient"):
+                lines.append(f"{strat}：{r.get('reason','樣本不足')}")
+            else:
+                lines.append(
+                    f"{strat}：整體命中 {r['overall_hit']}%（{r['samples']}筆/持有{r['horizon']}日）")
+                lines.append(f"  分段 {r['segment_hits']}｜波動{r['spread']}％｜{r['stability']}｜判定：{r['verdict']}")
+        lines.append("")
+        lines.append("註：命中合理目標53-57%；分段波動大代表脆弱/過擬合，>65%要先懷疑樣本。")
+        await ctx.send("\n".join(lines))
+    except Exception as e:
+        log_error(f"!validate 失敗: {e}")
+        await ctx.send(f"❌ 驗證失敗: {str(e)}")
+
+
 @bot.command(name="bind")
 async def bind_channel(ctx):
     bot.target_channel_id = ctx.channel.id
