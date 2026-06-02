@@ -351,6 +351,14 @@ def analyze_single_target(stock_id: str, run_optimization_if_missing: bool = Fal
     except Exception as e:
         log_info(f"P2 多源資料抓取略過: {e}")
 
+    # P3 機率化獲利空間：用該股歷史 N 日後報酬分佈
+    profit_space = {}
+    try:
+        from utils.profit_space import compute_profit_space
+        profit_space = compute_profit_space(df)
+    except Exception as e:
+        log_info(f"P3 獲利空間計算略過: {e}")
+
     chart_params = backtest_info.get("params", {}) if backtest_info else {}
     chart_path = generate_stock_chart(stock_name, df, strategy_params=chart_params)
     return {
@@ -358,6 +366,7 @@ def analyze_single_target(stock_id: str, run_optimization_if_missing: bool = Fal
         "price_data": {"latest_close": float(df['Close'].iloc[-1]), "volume": int(df['Volume'].iloc[-1])},
         "strategies": {"Technical": tech_res, "Fundamental": fund_res, "Chip": chip_res},
         "sentiment": {"news": news_res, "margin": margin_res},
+        "profit_space": profit_space,
         "backtest_insight": backtest_info,
         "final_decision": decision,
         "chart_path": chart_path
@@ -412,9 +421,12 @@ def generate_moltbot_prompt(data, is_single=False):
 2. **🧠 決策邏輯**: 
    - 解釋為何選擇 {data['backtest_insight'].get('strategy_type')}。
    - 分析目前技術面多空。
-3. **🔍 籌碼與消息面**:
+3. **💰 獲利空間 (機率化)**:
+   - 根據 profit_space 欄位說明：持有約 N 交易日的上漲機率、期望報酬、目標價區間(target_low~target_high)、下檔風險。
+   - 這是基於該股歷史報酬分佈的統計值，請如實引用數字，不要誇大。若 insufficient 為真就說樣本不足。
+4. **🔍 籌碼與消息面**:
    - 根據 sentiment 欄位解讀三大法人籌碼(Chip)、融資融券(margin)、新聞情緒(news)，三者是否與技術面同向或背離。
-4. **⛔ 風險管理**:
+5. **⛔ 風險管理**:
    - 說明波動率風險與價位防守邏輯。
 
 [Input Data]
