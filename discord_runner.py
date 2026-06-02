@@ -98,6 +98,27 @@ class QuantBot(commands.Bot):
 
 bot = QuantBot()
 
+async def send_long(ctx, text, files=None):
+    """Discord 單則上限 2000 字，超過就依段落切塊送出；附件掛在最後一則。"""
+    LIMIT = 1990
+    chunks = []
+    buf = ""
+    for para in text.split("\n"):
+        # 單段就超長 → 硬切
+        while len(para) > LIMIT:
+            chunks.append(para[:LIMIT]); para = para[LIMIT:]
+        if len(buf) + len(para) + 1 > LIMIT:
+            chunks.append(buf); buf = para
+        else:
+            buf = f"{buf}\n{para}" if buf else para
+    if buf:
+        chunks.append(buf)
+    if not chunks:
+        chunks = ["(無內容)"]
+    for i, c in enumerate(chunks):
+        await ctx.send(c, files=files if (i == len(chunks) - 1 and files) else None)
+
+
 def resolve_ticker_info(ticker_input):
     raw = ticker_input.strip().upper()
     if raw.isdigit():
@@ -183,7 +204,7 @@ async def analyze_stock(ctx, ticker: str = None):
             if data.get('chart_path') and os.path.exists(data['chart_path']):
                 files.append(discord.File(data['chart_path']))
             
-            await ctx.send(f"{header}\n\n{ai_response}", files=files)
+            await send_long(ctx, f"{header}\n\n{ai_response}", files=files)
             
         except Exception as e:
             log_error(f"系統錯誤: {e}")
