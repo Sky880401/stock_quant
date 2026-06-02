@@ -16,6 +16,7 @@ load_dotenv(dotenv_path=Path(PROJECT_ROOT) / '.env', override=True)
 
 from main import analyze_single_target, generate_moltbot_prompt, get_stock_name_zh, TARGET_STOCKS
 from ai_runner import generate_insight
+from utils.model_config import get_model, set_model, AVAILABLE_MODELS
 from utils.logger import log_info, log_error
 from utils.history_recorder import record_user_query
 from utils.quota_manager import check_quota_status, deduct_quota, admin_add_quota
@@ -742,6 +743,52 @@ async def training_history(ctx):
     except Exception as e:
         log_error(f"!train-history 命令失敗: {e}")
         await ctx.send(f"❌ 錯誤: {str(e)}")
+
+class ModelSelect(discord.ui.Select):
+    def __init__(self, owner_id):
+        self.owner_id = owner_id
+        current = get_model()
+        options = []
+        for label, (model_id, desc) in AVAILABLE_MODELS.items():
+            options.append(discord.SelectOption(
+                label=label,
+                value=model_id,
+                description=desc[:100],
+                default=(model_id == current),
+            ))
+        super().__init__(placeholder="選擇交談用的 NVIDIA 模型…", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        # 雙重保險：只有 owner 能真正改（按鈕本身已限 owner，但防止別人撈 custom_id）
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("⛔ 只有擁有者可以切換模型。", ephemeral=True)
+            return
+        chosen = self.values[0]
+        ok = set_model(chosen)
+        if ok:
+            await interaction.response.send_message(f"✅ 已切換交談模型為：`{chosen}`", ephemeral=False)
+        else:
+            await interaction.response.send_message("❌ 無效的模型。", ephemeral=True)
+        self.view.stop()
+
+
+class ModelSelectView(discord.ui.View):
+    def __init__(self, owner_id):
+        super().__init__(timeout=60)
+        self.owner_id = owner_id
+        self.add_item(ModelSelect(owner_id))
+
+
+@bot.command(name="model", aliases=["models", "setmodel"])
+async def select_model(ctx):
+    """切換 AI 交談模型（限 bot 擁有者本人）。"""
+    if not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ 此指令僅限擁有者使用。")
+        return
+    current = get_model()
+    view = ModelSelectView(ctx.author.id)
+    await ctx.send(f"🧠 目前模型：`{current}`\n請選擇新的交談模型：", view=view)
+
 
 @bot.command(name="bind")
 async def bind_channel(ctx):

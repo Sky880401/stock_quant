@@ -4,24 +4,22 @@ import time
 from pathlib import Path
 from dotenv import load_dotenv
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
+from utils.model_config import get_model
 
 # === 環境變數載入 ===
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 env_path = Path(PROJECT_ROOT) / '.env'
 load_dotenv(dotenv_path=env_path, override=True)
 
-# === 配置 ===
-MODEL_NAME = "meta/llama-3.3-70b-instruct"
-
 def get_nvidia_client():
-    """初始化 NVIDIA 客戶端"""
+    """初始化 NVIDIA 客戶端（模型由 !model 指令切換，預設 Llama 3.3 70B）"""
     api_key = os.getenv("NVIDIA_API_KEY")
     if not api_key:
         print("❌ Error: NVIDIA_API_KEY missing.")
         return None
-    
+
     return ChatNVIDIA(
-        model=MODEL_NAME,
+        model=get_model(),
         api_key=api_key,
         temperature=0.2,
         top_p=0.7,
