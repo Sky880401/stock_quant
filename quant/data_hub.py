@@ -113,9 +113,25 @@ def _price_inst_finmind(stock_id, start=HISTORY_START):
     return df
 
 
-def get_stock_frame(stock_id):
-    """組裝單檔面板（Close/Volume/Foreign/Trust/rev_yoy，FinMind 長歷史）。失敗回 None。"""
+FRAMES_DIR = os.path.join(CACHE_DIR, "frames")
+
+
+def get_stock_frame(stock_id, use_cache=True, max_age_days=2):
+    """組裝單檔面板（Close/Volume/Foreign/Trust/rev_yoy，FinMind 長歷史）。失敗回 None。
+
+    逐檔磁碟快取：抓過的存 data/quant_cache/frames/<sid>.pkl，回填可中斷續跑、
+    重建免重打 FinMind（省配額）。
+    """
     import time as _time
+    os.makedirs(FRAMES_DIR, exist_ok=True)
+    fpath = os.path.join(FRAMES_DIR, f"{stock_id}.pkl")
+    if use_cache and os.path.exists(fpath):
+        age_d = (datetime.now().timestamp() - os.path.getmtime(fpath)) / 86400
+        if age_d < max_age_days:
+            try:
+                return pickle.load(open(fpath, "rb"))
+            except Exception:
+                pass
     df = _price_inst_finmind(stock_id)
     if df is None or len(df) < 60:
         return None
@@ -131,6 +147,10 @@ def get_stock_frame(stock_id):
         vals = yoy.values
         pos = np.searchsorted(ev, idx.values.astype("datetime64[ns]"), side="right") - 1
         df["rev_yoy"] = [round(float(vals[p]), 1) if p >= 0 else float("nan") for p in pos]
+    try:
+        pickle.dump(df, open(fpath, "wb"))   # 逐檔快取，回填可續跑
+    except Exception:
+        pass
     return df
 
 
