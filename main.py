@@ -129,18 +129,18 @@ def calculate_kelly_position(win_rate, avg_win_ratio, avg_loss_ratio, max_positi
     其中: p=勝率, b=贏損比, q=敗率(1-p)
     使用Kelly的25% (四分之一Kelly) 保守策略
     """
-    if win_rate <= 0 or win_rate >= 1:
-        return max_position * 0.5
-    if avg_win_ratio <= 0 or avg_loss_ratio <= 0:
-        return max_position * 0.5
-    
+    # 資料不足 → 保守給一成
+    if not (0 < win_rate < 1) or avg_win_ratio <= 0 or avg_loss_ratio <= 0:
+        return max_position * 0.10
+
     loss_rate = 1.0 - win_rate
     b = avg_win_ratio / avg_loss_ratio
-    kelly_fraction = (win_rate * b - loss_rate) / b
-    kelly_fraction = max(0, min(kelly_fraction, 0.25))
-    conservative_kelly = kelly_fraction * 0.25
-    kelly_position = conservative_kelly * max_position
-    return max(5, min(kelly_position, max_position))
+    full_kelly = (win_rate * b - loss_rate) / b   # 完整 Kelly 比例（可能為負＝不該進場）
+    if full_kelly <= 0:
+        return 0.0
+    # 四分之一 Kelly（保守），單檔上限 25% 資金；只折扣一次
+    quarter_kelly = min(full_kelly * 0.25, 0.25)
+    return round(quarter_kelly * max_position, 1)
 
 def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res, backtest_info=None, fundamentals=None, df=None, inst_res=None):
     current_price = df['Close'].iloc[-1]
@@ -260,7 +260,7 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
     else: action = "EXIT / SELL"
 
     # [優化] 使用Kelly準則計算頭寸，結合ATR波動率限制
-    base_kelly_position = 50  # Kelly基礎頭寸
+    base_kelly_position = 100  # 以「佔總資金 %」為單位（quarter-Kelly 內已含單檔上限）
     
     # 從backtest_info提取平均贏損比
     avg_win_ratio = backtest_info.get("avg_win_ratio", 1.5) if backtest_info else 1.5
@@ -276,14 +276,18 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
     elif atr_pct < 4.0: atm_limit = 0.6
     else: atm_limit = 0.3  # 高波動大幅降低
     
-    final_pos = int(kelly_position * atm_limit)
-    if final_pos < 10 and "BUY" in action: final_pos = 10
-    elif "EXIT" in action or "REDUCE" in action: final_pos = 0 
-    
+    final_pos = int(round(kelly_position * atm_limit))
+    # 中性(HOLD)時減半，明確看多才給足 Kelly 建議
+    if action == "HOLD (Neutral)":
+        final_pos = int(final_pos * 0.5)
+
     if action in ["EXIT / SELL", "REDUCE / UNDERWEIGHT"]:
-        pos_str = "0-10% (出清/減碼)"
+        pos_str = "0% (出清/減碼)"
+    elif final_pos <= 0:
+        pos_str = "0-2% (訊號不足，觀望)"
     else:
-        pos_str = f"{max(0, final_pos-10)}-{final_pos}%"
+        low = max(0, int(round(final_pos * 0.6)))
+        pos_str = f"{low}-{final_pos}%"
 
     atr_multiplier = 2.0 if atr_pct > 3.0 else 1.5 
     atr_stop = current_price - (atr * atr_multiplier)
