@@ -17,8 +17,16 @@ class DataProvider(ABC):
 class FinMindProvider(DataProvider):
     def __init__(self):
         try:
+            import os
             from FinMind.data import DataLoader
             self.loader = DataLoader()
+            # 有設 FINMIND_TOKEN 就登入，大幅提高 API 額度（匿名額度極低）
+            token = os.getenv("FINMIND_TOKEN")
+            if token:
+                try:
+                    self.loader.login_by_token(api_token=token)
+                except Exception as e:
+                    logging.warning(f"FinMind login_by_token 失敗: {e}")
         except ImportError:
             self.loader = None
 
