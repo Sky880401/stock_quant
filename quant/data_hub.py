@@ -17,17 +17,39 @@ import pandas as pd
 CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "quant_cache")
 
 
-def _month_revenue_yoy(stock_id):
-    """回傳 Series：index=生效日(公布後), value=月營收YoY(%)。失敗回空。"""
-    try:
+_DL = None
+
+
+def _loader():
+    """全域單例 FinMind DataLoader（只登入一次，省額度、避免每檔重登）。"""
+    global _DL
+    if _DL is None:
         import os as _os
         from FinMind.data import DataLoader
-        dl = DataLoader()
+        _DL = DataLoader()
         tok = _os.getenv("FINMIND_TOKEN")
         if tok:
-            dl.login_by_token(api_token=tok)
-        df = dl.taiwan_stock_month_revenue(stock_id=stock_id, start_date="2023-01-01",
-                                           end_date=datetime.now().strftime("%Y-%m-%d"))
+            try:
+                _DL.login_by_token(api_token=tok)
+            except Exception:
+                pass
+    return _DL
+
+
+def _month_revenue_yoy(stock_id):
+    """回傳 Series：index=生效日(公布後), value=月營收YoY(%)。失敗回空（含一次重試）。"""
+    import time as _time
+    df = None
+    for attempt in range(2):
+        try:
+            df = _loader().taiwan_stock_month_revenue(
+                stock_id=stock_id, start_date="2023-01-01",
+                end_date=datetime.now().strftime("%Y-%m-%d"))
+            if df is not None and not df.empty:
+                break
+        except Exception:
+            _time.sleep(0.8)
+    try:
         if df is None or df.empty:
             return pd.Series(dtype=float)
         df = df.sort_values(["revenue_year", "revenue_month"])
