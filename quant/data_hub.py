@@ -73,12 +73,25 @@ def _month_revenue_yoy(stock_id):
 
 
 def get_stock_frame(stock_id):
-    """組裝單檔面板（Close/Volume/Foreign/Trust/rev_yoy）。失敗回 None。"""
-    from main import fetch_stock_data_smart
-    res = fetch_stock_data_smart(f"{stock_id}.TW")
-    if res.get("status") == "error":
+    """組裝單檔面板（Close/Volume/Foreign/Trust/rev_yoy）。失敗回 None。
+
+    為避免 FinMind 爆量限流：價格走 yfinance、法人走已快取的 TWSE、FinMind 只用於月營收。
+    """
+    import time as _time
+    from data.data_loader import get_data_provider
+    from crawlers.twse_institutional import attach_institutional
+    try:
+        df = get_data_provider("yfinance").get_history(f"{stock_id}.TW")
+    except Exception:
+        df = None
+    if df is None or df.empty or "Close" not in df.columns:
         return None
-    df = res["df"][["Close", "Volume", "Foreign", "Trust"]].copy()
+    df = df[df["Close"].notna()]
+    if len(df) < 60:
+        return None
+    df = attach_institutional(df, stock_id)          # 法人走 TWSE 快取（不打 FinMind）
+    df = df[["Close", "Volume", "Foreign", "Trust"]].copy()
+    _time.sleep(0.6)                                  # 節流，避免月營收 FinMind 限流
     yoy = _month_revenue_yoy(stock_id)
     df["rev_yoy"] = float("nan")
     if len(yoy):
