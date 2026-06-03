@@ -43,7 +43,7 @@ def _month_revenue_yoy(stock_id):
     for attempt in range(2):
         try:
             df = _loader().taiwan_stock_month_revenue(
-                stock_id=stock_id, start_date="2023-01-01",
+                stock_id=stock_id, start_date="2015-01-01",
                 end_date=datetime.now().strftime("%Y-%m-%d"))
             if df is not None and not df.empty:
                 break
