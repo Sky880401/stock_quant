@@ -190,10 +190,19 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
     
     # [策略計分區塊 - 動態權重版本]
     if strategy_type == "Reversion (RSI)":
-        if rsi_val <= 30: score += tech_weight
-        elif rsi_val >= 70: score -= tech_weight
-        elif rsi_val < 45: score += tech_weight * 0.3
-        elif rsi_val > 55: score -= tech_weight * 0.3
+        # 順勢均值回歸：多頭買回檔、空頭賣反彈，不逆勢對作（這是原本命中率低的主因）
+        ma200_now = df['Close'].rolling(200).mean().iloc[-1]
+        in_uptrend = current_price > ma200_now if pd.notna(ma200_now) else True
+        if in_uptrend:
+            # 多頭：超賣是買點；不因超買而做空（順勢續抱）
+            if rsi_val <= 40: score += tech_weight
+            elif rsi_val <= 50: score += tech_weight * 0.3
+            elif rsi_val >= 82: score -= tech_weight * 0.3   # 僅極端過熱才略減
+        else:
+            # 空頭：反彈是賣點；不因超賣而抄底（接刀）
+            if rsi_val >= 60: score -= tech_weight
+            elif rsi_val >= 50: score -= tech_weight * 0.3
+            elif rsi_val <= 18: score += tech_weight * 0.3   # 僅極端超跌才略加
     elif strategy_type == "Momentum (MACD)":
         if "BUY" in macd_status: score += tech_weight
         elif "SELL" in macd_status: score -= tech_weight

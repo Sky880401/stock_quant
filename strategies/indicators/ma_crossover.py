@@ -71,10 +71,21 @@ class MACrossoverStrategy(BaseStrategy):
             score += 1
             assumptions.append("Golden Cross (MA20/50)")
 
-        # === 5. 輸出結果 ===
+        # === 5. 輸出結果（順勢濾網：不對作大趨勢）===
+        uptrend = c_price > c_ma200
         signal = "HOLD"
-        if score >= 1.5: signal = "BUY"
-        elif score <= -1.5: signal = "SELL"
+        if score >= 1.5:
+            # 多頭才做多；且不在極度超買(>78)時追高
+            if uptrend and c_rsi < 78:
+                signal = "BUY"
+            else:
+                assumptions.append("達做多分數但非多頭/已超買→不追")
+        elif score <= -1.5:
+            # 只在空頭(價<MA200)才轉空；多頭中的短期轉弱視為觀望，不逆勢做空
+            if not uptrend:
+                signal = "SELL"
+            else:
+                assumptions.append("多頭中短期轉弱→觀望不做空")
 
         # 計算停損 (ATR 或 MA 支撐)
         stop_loss = c_ma50 if c_price > c_ma50 else c_ma200
