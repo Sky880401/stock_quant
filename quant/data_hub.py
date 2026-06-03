@@ -72,26 +72,54 @@ def _month_revenue_yoy(stock_id):
         return pd.Series(dtype=float)
 
 
-def get_stock_frame(stock_id):
-    """組裝單檔面板（Close/Volume/Foreign/Trust/rev_yoy）。失敗回 None。
+HISTORY_START = "2016-01-01"   # 橫截面回測需多年歷史
 
-    為避免 FinMind 爆量限流：價格走 yfinance、法人走已快取的 TWSE、FinMind 只用於月營收。
-    """
+
+def _price_inst_finmind(stock_id, start=HISTORY_START):
+    """用 FinMind 拉長歷史：還原股價(TaiwanStockPriceAdj) + 三大法人，回 df[Close,Volume,Foreign,Trust]。"""
     import time as _time
-    from data.data_loader import get_data_provider
-    from crawlers.twse_institutional import attach_institutional
-    try:
-        df = get_data_provider("yfinance").get_history(f"{stock_id}.TW")
-    except Exception:
-        df = None
-    if df is None or df.empty or "Close" not in df.columns:
+    dl = _loader()
+    end = datetime.now().strftime("%Y-%m-%d")
+    price = None
+    for _ in range(2):
+        try:
+            price = dl.taiwan_stock_daily_adj(stock_id=stock_id, start_date=start, end_date=end)
+            if price is not None and not price.empty:
+                break
+        except Exception:
+            _time.sleep(0.8)
+    if price is None or price.empty:
         return None
+    price = price.rename(columns={"close": "Close", "Trading_Volume": "Volume", "date": "Date"})
+    price["Date"] = pd.to_datetime(price["Date"])
+    price = price.set_index("Date").sort_index()
+    df = price[["Close", "Volume"]].astype(float)
     df = df[df["Close"].notna()]
-    if len(df) < 60:
+    # 三大法人（FinMind：columns buy/sell/name）→ 外資/投信淨買
+    df["Foreign"] = 0.0; df["Trust"] = 0.0
+    try:
+        ins = dl.taiwan_stock_institutional_investors(stock_id=stock_id, start_date=start, end_date=end)
+        if ins is not None and not ins.empty:
+            ins["net"] = ins["buy"].astype(float) - ins["sell"].astype(float)
+            ins["Date"] = pd.to_datetime(ins["date"])
+            piv = ins.pivot_table(index="Date", columns="name", values="net", aggfunc="sum")
+            fmap = {"Foreign_Investor": "Foreign", "Investment_Trust": "Trust"}
+            for src, dst in fmap.items():
+                if src in piv.columns:
+                    df[dst] = piv[src].reindex(df.index).fillna(0)
+    except Exception:
+        pass
+    return df
+
+
+def get_stock_frame(stock_id):
+    """組裝單檔面板（Close/Volume/Foreign/Trust/rev_yoy，FinMind 長歷史）。失敗回 None。"""
+    import time as _time
+    df = _price_inst_finmind(stock_id)
+    if df is None or len(df) < 60:
         return None
-    df = attach_institutional(df, stock_id)          # 法人走 TWSE 快取（不打 FinMind）
     df = df[["Close", "Volume", "Foreign", "Trust"]].copy()
-    _time.sleep(0.6)                                  # 節流，避免月營收 FinMind 限流
+    _time.sleep(0.3)                                  # 節流
     yoy = _month_revenue_yoy(stock_id)
     df["rev_yoy"] = float("nan")
     if len(yoy):
