@@ -20,7 +20,7 @@ from utils.model_config import get_model, set_model, AVAILABLE_MODELS
 from utils.logger import log_info, log_error
 from utils.history_recorder import record_user_query
 from utils.prediction_log import log_prediction, backfill_matured, accuracy_summary
-from utils.quota_manager import check_quota_status, deduct_quota, admin_add_quota
+from utils.quota_manager import check_quota_status, deduct_quota, add_bonus
 from utils.user_analytics import create_ranking_embed
 from utils.period_backtest import load_period_results, get_predefined_periods
 
@@ -40,13 +40,14 @@ def load_stock_map():
         print(f"❌ Failed to load stock map: {e}")
 
 class ConfirmView(discord.ui.View):
-    def __init__(self, ctx, ticker, stock_name, user_id, is_admin):
+    def __init__(self, ctx, ticker, stock_name, user_id, is_admin, tier='free'):
         super().__init__(timeout=60)
         self.ctx = ctx
         self.ticker = ticker
         self.stock_name = stock_name
         self.user_id = user_id
         self.is_admin = is_admin
+        self.tier = tier
         self.value = None
 
     @discord.ui.button(label="✅ 確認分析", style=discord.ButtonStyle.green)
@@ -56,7 +57,7 @@ class ConfirmView(discord.ui.View):
             return
         
         if not self.is_admin:
-            deduct_quota(self.user_id)
+            deduct_quota(self.user_id, self.tier)
         
         await interaction.response.send_message(f"🚀 BMO 啟動！正在為 **{self.stock_name}** 進行深度運算...", ephemeral=False)
         self.value = True
@@ -165,7 +166,7 @@ async def analyze_stock(ctx, ticker: str = None):
         await ctx.send(f"❌ 代號解析錯誤: {e}")
         return
     
-    view = ConfirmView(ctx, clean_ticker, stock_name, user_id, is_admin)
+    view = ConfirmView(ctx, clean_ticker, stock_name, user_id, is_admin, tier)
     msg = await ctx.send(f"🧐 您是想查詢 **{stock_name} ({clean_ticker})** 嗎？\n(今日剩餘: {remaining} 次)", view=view)
     await view.wait()
     await msg.edit(view=None)
@@ -210,11 +211,14 @@ async def analyze_stock(ctx, ticker: str = None):
             log_error(f"系統錯誤: {e}")
             await ctx.send(f"❌ 系統錯誤: {str(e)}")
 
-@bot.command(name="gift")
+@bot.command(name="gift", aliases=["quota", "give"])
 @commands.has_permissions(administrator=True)
 async def gift_quota(ctx, member: discord.Member, amount: int):
-    new_limit = admin_add_quota(member.id, amount)
-    await ctx.send(f"🎁 已為 **{member.display_name}** 增加 {amount} 次額度！\n現在總額度: **{new_limit} 次/天**")
+    """一次性加值：@用戶 給額外 N 次查詢額度（用完才歸零，不影響每日上限）。"""
+    new_bonus = add_bonus(member.id, amount)
+    await ctx.send(
+        f"🎁 已給 **{member.display_name}** 額外 {amount} 次查詢額度（一次性）！\n"
+        f"目前加值餘額：**{new_bonus} 次**（用完才歸零，每日免費額度照常）")
 
 @bot.command(name="hotlist", aliases=["hotrank", "rank"])
 async def show_hotlist(ctx):

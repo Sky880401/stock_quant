@@ -9,34 +9,37 @@ DEFAULT_LIMIT = 5    # 免費
 BETA_LIMIT = 50      # BETA 測試員
 PREMIUM_LIMIT = 100  # VIP 付費
 
+def _empty(today):
+    return {"date": today, "users": {}, "limits": {}, "bonus": {}}
+
+
 def load_quota():
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if not os.path.exists(QUOTA_FILE):
-        return {
-            "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-            "users": {},
-            "limits": {}  # 新增：存儲用戶自訂額度
-        }
+        return _empty(today)
     try:
         with open(QUOTA_FILE, "r") as f:
             data = json.load(f)
-            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            # 每天重置used計數，但保留limits
-            if data.get("date") != today:
-                return {
-                    "date": today,
-                    "users": {},
-                    "limits": data.get("limits", {})  # 保留用戶的自訂額度
-                }
-            # 確保limits字段存在
-            if "limits" not in data:
-                data["limits"] = {}
-            return data
-    except:
-        return {
-            "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-            "users": {},
-            "limits": {}
-        }
+        # 每天重置 used 計數，但保留 limits（每日上限）與 bonus（一次性加值，用完才歸零）
+        if data.get("date") != today:
+            return {"date": today, "users": {},
+                    "limits": data.get("limits", {}), "bonus": data.get("bonus", {})}
+        data.setdefault("limits", {})
+        data.setdefault("bonus", {})
+        return data
+    except Exception:
+        return _empty(today)
+
+
+def _base_limit(data, user_str, tier):
+    """該用戶的每日上限（自訂 limits 優先，否則依 tier）。"""
+    if user_str in data.get("limits", {}):
+        return data["limits"][user_str]
+    if tier == 'premium':
+        return PREMIUM_LIMIT
+    if tier == 'beta':
+        return BETA_LIMIT
+    return DEFAULT_LIMIT
 
 def save_quota(data):
     os.makedirs(os.path.dirname(QUOTA_FILE), exist_ok=True)
@@ -45,53 +48,49 @@ def save_quota(data):
 
 def check_quota_status(user_id, tier='free'):
     """
-    檢查用戶今日額度狀態
-    返回: (是否有剩餘額度, 剩餘次數, 上限)
+    檢查用戶今日額度狀態。剩餘 = 今日未用的每日額度 + 一次性 bonus。
+    返回: (是否有剩餘額度, 剩餘次數, 每日上限)
     """
     data = load_quota()
     user_str = str(user_id)
     used = data["users"].get(user_str, 0)
-    
-    # 優先檢查用戶自訂額度（來自!gift命令）
-    if user_str in data.get("limits", {}):
-        limit = data["limits"][user_str]
-    # 否則根據tier判斷
-    elif tier == 'premium':
-        limit = PREMIUM_LIMIT
-    elif tier == 'beta':
-        limit = BETA_LIMIT
-    else:
-        limit = DEFAULT_LIMIT
-        
-    return used < limit, limit - used, limit
+    limit = _base_limit(data, user_str, tier)
+    bonus = data.get("bonus", {}).get(user_str, 0)
+    remaining = max(0, limit - used) + bonus
+    return remaining > 0, remaining, limit
 
-def deduct_quota(user_id):
+def deduct_quota(user_id, tier='free'):
+    """扣一次額度：先扣每日額度，每日額度用完才扣一次性 bonus。"""
     data = load_quota()
     user_str = str(user_id)
     used = data["users"].get(user_str, 0)
-    data["users"][user_str] = used + 1
+    limit = _base_limit(data, user_str, tier)
+    if used < limit:
+        data["users"][user_str] = used + 1
+    else:
+        cur = data.setdefault("bonus", {}).get(user_str, 0)
+        data["bonus"][user_str] = max(0, cur - 1)
     save_quota(data)
     return used + 1
 
-def admin_add_quota(user_id, amount):
-    """
-    管理員增加用戶額度
-    邏輯：增加用戶的上限額度（不是減少已用次數）
-    返回: 用戶新的總額度上限
+def add_bonus(user_id, amount):
+    """一次性加值：給用戶額外 amount 次查詢（用完才歸零、跨日保留，不動每日上限）。
+    返回: 用戶目前的 bonus 餘額。
     """
     data = load_quota()
     user_str = str(user_id)
-    
-    # 初始化limits字典
-    if "limits" not in data:
-        data["limits"] = {}
-    
-    # 獲取用戶當前的基礎上限（如果有自訂額度則使用，否則使用默認值）
-    current_limit = data["limits"].get(user_str, DEFAULT_LIMIT)
-    
-    # 增加額度
-    new_limit = current_limit + amount
+    cur = data.setdefault("bonus", {}).get(user_str, 0)
+    new_bonus = max(0, cur + amount)
+    data["bonus"][user_str] = new_bonus
+    save_quota(data)
+    return new_bonus
+
+def admin_add_quota(user_id, amount):
+    """（保留）永久調高每日上限。一次性加值請用 add_bonus。"""
+    data = load_quota()
+    user_str = str(user_id)
+    data.setdefault("limits", {})
+    new_limit = data["limits"].get(user_str, DEFAULT_LIMIT) + amount
     data["limits"][user_str] = new_limit
-    
     save_quota(data)
     return new_limit
