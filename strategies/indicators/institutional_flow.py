@@ -1,9 +1,17 @@
 """
-法人籌碼動能策略 —— 用三大法人(外資/投信/自營)的連續買賣超與佔成交量比重，
-判斷主力資金方向。台股短中線高度受法人主導，這是價量之外最有 alpha 的維度。
+法人籌碼動能策略 v2 —— 深化版。
 
-依賴 df 內的 Foreign / Trust / Dealer 欄位（由 FinMindProvider 併入，單位：股）。
-無這些欄位時回 UNKNOWN（不影響其他策略）。
+理論依據（台股實證）：法人「集中且持續」的買賣超（institutional herding）對後續
+報酬有預測力，且應「順著做」(momentum) 而非逆勢；外資與投信同向（共識）訊號最強，
+分散/零星的法人進出沒有預測力。(Market states and institutional herds, Taiwan;
+QFII aggressive net buying amplifies momentum.)
+
+因此計分三支柱：
+  1) 持續性 persistence：外資連續淨買/賣天數（趨勢強度）
+  2) 集中度 concentration：法人淨買佔成交量比重（買盤是否夠重）
+  3) 法人共識 consensus：外資 + 投信是否同向（兩大法人一致）
+
+依賴 df 內 Foreign / Trust / Dealer 欄位（FinMindProvider 併入，單位：股）。
 """
 import numpy as np
 import pandas as pd
@@ -12,78 +20,88 @@ from .base_strategy import BaseStrategy
 from .schema import StrategyResult
 
 
+def _streak(vals):
+    """回傳同向連續天數（帶正負號）。"""
+    sign = np.sign(vals)
+    if len(sign) == 0 or sign[-1] == 0:
+        return 0
+    s = 0
+    for v in reversed(sign):
+        if v == sign[-1] and v != 0:
+            s += 1
+        else:
+            break
+    return int(s * sign[-1])
+
+
 class InstitutionalFlowStrategy(BaseStrategy):
     def analyze(self, df: pd.DataFrame, extra_data: dict = None) -> StrategyResult:
         if df is None or len(df) < 20 or "Foreign" not in df.columns:
             return StrategyResult("UNKNOWN", 0.0, "無法人籌碼資料", risk_penalty=0.5)
-
         for col in ("Foreign", "Trust", "Dealer"):
             if col not in df.columns:
                 df[col] = 0
-        recent = df.tail(10).copy()
+
+        recent = df.tail(20).copy()
         foreign = recent["Foreign"].fillna(0)
         trust = recent["Trust"].fillna(0)
         vol = recent["Volume"].replace(0, np.nan)
 
-        score = 0.0
-        assumptions = []
-
-        # 1. 外資近 5 日累積買賣超（量大、趨勢主導）
-        f5 = foreign.tail(5).sum()
-        if f5 > 0:
-            score += 1.0; assumptions.append(f"外資5日買超{int(f5/1000)}k")
-        elif f5 < 0:
-            score -= 1.0; assumptions.append(f"外資5日賣超{int(abs(f5)/1000)}k")
-
-        # 2. 外資連續買/賣天數（連續性 = 趨勢強度）
-        sign = np.sign(foreign.tail(5).values)
-        streak = 0
-        for s in reversed(sign):
-            if s == sign[-1] and s != 0:
-                streak += 1
-            else:
-                break
-        if streak >= 3:
-            score += 0.6 * np.sign(sign[-1]); assumptions.append(f"外資連{streak}日同向")
-
-        # 3. 投信動能（台股強短線訊號：作帳/認養）
+        f5, f10 = foreign.tail(5).sum(), foreign.tail(10).sum()
         t5 = trust.tail(5).sum()
-        if t5 > 0:
-            score += 0.7; assumptions.append(f"投信5日買超{int(t5/1000)}k")
-        elif t5 < 0:
-            score -= 0.7; assumptions.append(f"投信5日賣超{int(abs(t5)/1000)}k")
-
-        # 4. 法人買超佔成交量比重（買盤強度，避免被大量稀釋）
+        f_streak = _streak(foreign.tail(8).values)
+        # 集中度：近 5 日法人(外資+投信)淨買佔成交量比
         try:
-            inst_ratio = (foreign + trust).tail(5).sum() / vol.tail(5).sum()
-            if inst_ratio > 0.10:
-                score += 0.4; assumptions.append("法人佔量比高(強買盤)")
-            elif inst_ratio < -0.10:
-                score -= 0.4; assumptions.append("法人佔量比負(強賣壓)")
+            conc = float((foreign + trust).tail(5).sum() / vol.tail(5).sum())
         except Exception:
-            inst_ratio = 0.0
+            conc = 0.0
+        consensus = (np.sign(f5) == np.sign(t5)) and f5 != 0  # 外資投信同向
 
-        # 5. 價量法人背離：價漲但法人賣 → 警訊
-        price_chg = (recent["Close"].iloc[-1] - recent["Close"].iloc[0]) / recent["Close"].iloc[0]
-        if price_chg > 0.03 and (f5 + t5) < 0:
-            score -= 0.5; assumptions.append("⚠️價漲法人賣(背離)")
+        score = 0.0
+        a = []
+        # 1) 持續性（連續同向天數，順勢）
+        if f_streak >= 3:
+            score += 1.0; a.append(f"外資連{f_streak}日買")
+        elif f_streak <= -3:
+            score -= 1.0; a.append(f"外資連{abs(f_streak)}日賣")
+        elif f5 > 0:
+            score += 0.4; a.append("外資5日偏買")
+        elif f5 < 0:
+            score -= 0.4; a.append("外資5日偏賣")
 
+        # 2) 集中度（買盤夠重才算數）
+        if conc > 0.08:
+            score += 0.8; a.append(f"法人佔量{conc*100:.0f}%(重)")
+        elif conc > 0.03:
+            score += 0.3
+        elif conc < -0.08:
+            score -= 0.8; a.append(f"法人賣壓{conc*100:.0f}%")
+        elif conc < -0.03:
+            score -= 0.3
+
+        # 3) 法人共識（外資+投信同向 → 加成）
+        if consensus and f5 > 0 and t5 > 0:
+            score += 0.7; a.append("外資投信同買")
+        elif consensus and f5 < 0 and t5 < 0:
+            score -= 0.7; a.append("外資投信同賣")
+
+        # 順勢：分數夠強才出手（門檻較 v1 寬，讓訊號更常觸發但仍要求共識/集中）
         signal = "HOLD"
         if score >= 1.2:
             signal = "BUY"
         elif score <= -1.2:
             signal = "SELL"
-        conf = min(1.0, abs(score) / 2.5)
+        conf = round(min(1.0, abs(score) / 2.5), 2)
 
         return StrategyResult(
             signal=signal,
-            confidence=round(conf, 2),
-            reason=" | ".join(assumptions) or "法人無明顯動向",
+            confidence=conf,
+            reason=" | ".join(a) or "法人無明顯動向",
             scores={"inst_score": round(score, 2)},
-            assumptions=assumptions,
+            assumptions=a,
             raw_data={
-                "foreign_5d": int(f5), "trust_5d": int(t5),
-                "foreign_streak": int(streak),
-                "inst_volume_ratio": round(float(inst_ratio), 4),
+                "foreign_5d": int(f5), "foreign_10d": int(f10), "trust_5d": int(t5),
+                "foreign_streak": f_streak, "concentration": round(conc, 4),
+                "consensus": bool(consensus),
             },
         )
