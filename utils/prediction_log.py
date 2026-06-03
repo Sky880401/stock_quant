@@ -86,7 +86,7 @@ def log_prediction(ticker, name, action, confidence, strategy, entry_price,
 
 
 def log_closed(ticker, name, action, confidence, strategy, entry_price, actual_price,
-               ts=None, horizon_days=DEFAULT_HORIZON, source="seed"):
+               ts=None, horizon_days=DEFAULT_HORIZON_DAYS, source="seed"):
     """直接寫入一筆「已結算」預測（用歷史資料補考用）。
 
     entry_price=當時價、actual_price=horizon 後的真實價。中性(HOLD)不計分回 False。
