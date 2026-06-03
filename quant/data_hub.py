@@ -18,6 +18,16 @@ CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 
 
 _DL = None
+_last_call = [0.0]
+_MIN_INTERVAL = 0.9   # FinMind 有短時間爆量限制(與每小時600不同)，每次呼叫間隔節流
+
+
+def _throttle():
+    import time as _t
+    dt_ = _t.time() - _last_call[0]
+    if dt_ < _MIN_INTERVAL:
+        _t.sleep(_MIN_INTERVAL - dt_)
+    _last_call[0] = _t.time()
 
 
 def _loader():
@@ -40,8 +50,9 @@ def _month_revenue_yoy(stock_id):
     """回傳 Series：index=生效日(公布後), value=月營收YoY(%)。失敗回空（含一次重試）。"""
     import time as _time
     df = None
-    for attempt in range(2):
+    for attempt in range(3):
         try:
+            _throttle()
             df = _loader().taiwan_stock_month_revenue(
                 stock_id=stock_id, start_date="2015-01-01",
                 end_date=datetime.now().strftime("%Y-%m-%d"))
@@ -81,8 +92,9 @@ def _price_inst_finmind(stock_id, start=HISTORY_START):
     dl = _loader()
     end = datetime.now().strftime("%Y-%m-%d")
     price = None
-    for _ in range(2):
+    for _ in range(3):
         try:
+            _throttle()
             # 還原股價(adj)需付費級；免費用未還原 taiwan_stock_daily（除息跳空為已知雜訊）
             price = dl.taiwan_stock_daily(stock_id=stock_id, start_date=start, end_date=end)
             if price is not None and not price.empty:
@@ -99,6 +111,7 @@ def _price_inst_finmind(stock_id, start=HISTORY_START):
     # 三大法人（FinMind：columns buy/sell/name）→ 外資/投信淨買
     df["Foreign"] = 0.0; df["Trust"] = 0.0
     try:
+        _throttle()
         ins = dl.taiwan_stock_institutional_investors(stock_id=stock_id, start_date=start, end_date=end)
         if ins is not None and not ins.empty:
             ins["net"] = ins["buy"].astype(float) - ins["sell"].astype(float)
