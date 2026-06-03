@@ -977,6 +977,32 @@ async def list_active_strategies(ctx):
     await ctx.send("\n".join(lines))
 
 
+@bot.command(name="seed", aliases=["補考"])
+async def seed_predictions(ctx, ticker: str = None):
+    """用歷史資料補考、立即灌入已結算預測校準 P1（限 owner）。"""
+    if not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ 此指令僅限擁有者使用。")
+        return
+    try:
+        await ctx.defer()
+        from main import seed_history_predictions
+        if ticker:
+            clean, name = resolve_ticker_info(ticker)
+            tickers = [clean]
+        else:
+            tickers = ["2330.TW", "2317.TW", "2454.TW", "2412.TW", "2308.TW",
+                       "2882.TW", "0050.TW", "0056.TW", "2603.TW", "3008.TW"]
+        total = 0
+        for t in tickers:
+            total += await asyncio.to_thread(seed_history_predictions, t)
+        await ctx.send(
+            f"📥 歷史補考完成：寫入 {total} 筆已結算預測（{len(tickers)} 檔）。\n"
+            f"用 `!accuracy` 看校準後的命中率；倉位達門檻會自動改用 P1 實測。")
+    except Exception as e:
+        log_error(f"!seed 失敗: {e}")
+        await ctx.send(f"❌ 補考失敗: {str(e)}")
+
+
 @bot.command(name="bind")
 async def bind_channel(ctx):
     bot.target_channel_id = ctx.channel.id

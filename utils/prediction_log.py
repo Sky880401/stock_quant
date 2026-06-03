@@ -85,6 +85,42 @@ def log_prediction(ticker, name, action, confidence, strategy, entry_price,
         return False
 
 
+def log_closed(ticker, name, action, confidence, strategy, entry_price, actual_price,
+               ts=None, horizon_days=DEFAULT_HORIZON, source="seed"):
+    """直接寫入一筆「已結算」預測（用歷史資料補考用）。
+
+    entry_price=當時價、actual_price=horizon 後的真實價。中性(HOLD)不計分回 False。
+    為避免重複灌入，相同 (ticker, ts, source) 視為已存在則跳過。
+    """
+    init_db()
+    direction = _direction(action)
+    if direction not in ("long", "short") or not entry_price or not actual_price:
+        return False
+    ret = (actual_price - entry_price) / entry_price * 100.0
+    correct = 1 if ((direction == "long" and ret > 0) or (direction == "short" and ret < 0)) else 0
+    ts = ts or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with _conn() as con:
+            dup = con.execute(
+                "SELECT 1 FROM predictions WHERE ticker=? AND ts=? AND status='closed'",
+                (ticker, ts)).fetchone()
+            if dup:
+                return False
+            con.execute(
+                """INSERT INTO predictions
+                   (ts,ticker,name,action,direction,confidence,strategy,entry_price,
+                    horizon_days,due_date,actual_price,actual_return,correct,status)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'closed')""",
+                (ts, ticker, name, action, direction, confidence, strategy,
+                 float(entry_price), horizon_days, ts[:10],
+                 round(float(actual_price), 2), round(ret, 2), correct),
+            )
+        return True
+    except Exception as e:
+        print(f"❌ log_closed 失敗: {e}")
+        return False
+
+
 def backfill_matured(price_func):
     """回填已到期(due_date<=今天)且仍 open 的預測。
 
