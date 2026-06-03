@@ -83,7 +83,8 @@ def _price_inst_finmind(stock_id, start=HISTORY_START):
     price = None
     for _ in range(2):
         try:
-            price = dl.taiwan_stock_daily_adj(stock_id=stock_id, start_date=start, end_date=end)
+            # 還原股價(adj)需付費級；免費用未還原 taiwan_stock_daily（除息跳空為已知雜訊）
+            price = dl.taiwan_stock_daily(stock_id=stock_id, start_date=start, end_date=end)
             if price is not None and not price.empty:
                 break
         except Exception:
