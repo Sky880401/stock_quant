@@ -70,6 +70,12 @@ def fetch_stock_data_smart(stock_id: str):
                         for k, v in yf_funds.items():
                             if k not in fundamentals or fundamentals[k] is None: fundamentals[k] = v
                 except: pass
+            # 用 TWSE 官方三大法人買賣超覆寫籌碼欄（FinMind 匿名額度太低會是 0）
+            try:
+                from crawlers.twse_institutional import attach_institutional
+                df = attach_institutional(df, current_id)
+            except Exception as e:
+                log_info(f"TWSE 法人併入略過: {e}")
             log_info(f"數據獲取成功: {current_id}")
             return {"status": "success", "source": "Hybrid", "df": df, "fundamentals": fundamentals, "ticker": current_id}
         except Exception as e: last_error = str(e); continue
