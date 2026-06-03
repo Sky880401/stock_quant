@@ -1018,9 +1018,10 @@ async def strategy_health(ctx):
             return
 
         healthy = weak = pending = 0
+        total_hits = sum(b["hits"] for b in s["by_strategy"])
         lines = [
             "🩺 策略健康體檢（依 P1 實測命中率）",
-            f"整體：{s['hit_rate']}% 命中｜{s['closed']} 筆已結算｜平均報酬 {s['avg_return']}%",
+            f"整體：{s['hit_rate']}%（={total_hits}/{s['closed']}）｜平均報酬 {s['avg_return']}%",
             f"門檻：≥{HEALTHY:.0f}% 可下注、{MARGIN:.0f}-{HEALTHY:.0f}% 謹慎、<{MARGIN:.0f}% 建議停用",
             "",
         ]
