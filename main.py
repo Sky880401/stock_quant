@@ -268,7 +268,7 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
     
     # [P4] Kelly 倉位優先用 P1 實測命中率（樣本足夠時），否則退回回測勝率
     kelly_wr = win_rate / 100 if win_rate > 1 else win_rate
-    wr_source = f"回測{win_rate}%"
+    wr_source = f"回測{kelly_wr*100:.1f}%"
     try:
         from utils.strategy_weights import get_hit_rate
         p1_rate, p1_n = get_hit_rate(strategy_type)
