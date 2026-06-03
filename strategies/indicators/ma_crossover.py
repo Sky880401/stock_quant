@@ -45,55 +45,55 @@ class MACrossoverStrategy(BaseStrategy):
         bias_20 = ((c_price - c_ma20) / c_ma20) * 100
         bias_200 = ((c_price - c_ma200) / c_ma200) * 100
 
-        # === 4. 綜合訊號邏輯 ===
-        score = 0
+        # === 4. 綜合訊號邏輯（趨勢濾網 + 12-1 時間序列動能 + 回檔進場）===
+        # 理論依據：Moskowitz/Ooi/Pedersen (2012) 時間序列動能、200MA 趨勢濾網、
+        #          日頻訊號最弱→用 12-1 月動能(跳過最近一月)當主濾網，買回檔不追突破。
         assumptions = []
 
-        # A. 趨勢濾網 (Trend Filter)
-        if c_price > c_ma200:
-            score += 1
-            assumptions.append("Price > MA200 (Long-term Bullish)")
+        # 12-1 個月時間序列動能：約 252 交易日前 → 約 21 交易日前的報酬（跳過最近一月）
+        if len(close) >= 252:
+            mom_12_1 = close[-21] / close[-252] - 1.0
         else:
-            score -= 1
-            assumptions.append("Price < MA200 (Long-term Bearish)")
+            mom_12_1 = close[-21] / close[0] - 1.0
+        bias_20 = (c_price - c_ma20) / c_ma20      # 相對 MA20 乖離（判斷是否回檔/過熱）
+        golden = ma20[-1] > ma50[-1] and ma20[-2] <= ma50[-2]
 
-        # B. 動能共振 (Momentum Resonance)
-        if roc_14 > 0 and roc_21 > 0:
-            score += 0.5
-            assumptions.append("ROC Momentum Positive")
-        
-        # C. RSI 狀態
-        if c_rsi > 70: assumptions.append("RSI Overbought")
-        elif c_rsi < 30: assumptions.append("RSI Oversold")
+        # 多頭結構：站上年線 + 中期均線多排 + 12-1 動能為正（三重確認）
+        uptrend = (c_price > c_ma200) and (c_ma50 > c_ma200) and (mom_12_1 > 0)
+        # 空頭結構：跌破年線 + 中期均線空排
+        downtrend = (c_price < c_ma200) and (c_ma50 < c_ma200)
 
-        # D. 黃金/死亡交叉
-        if ma20[-1] > ma50[-1] and ma20[-2] <= ma50[-2]:
-            score += 1
-            assumptions.append("Golden Cross (MA20/50)")
-
-        # === 5. 輸出結果（順勢濾網：不對作大趨勢）===
-        uptrend = c_price > c_ma200
         signal = "HOLD"
-        if score >= 1.5:
-            # 多頭才做多；且不在極度超買(>78)時追高
-            if uptrend and c_rsi < 78:
-                signal = "BUY"
-            else:
-                assumptions.append("達做多分數但非多頭/已超買→不追")
-        elif score <= -1.5:
-            # 只在空頭(價<MA200)才轉空；多頭中的短期轉弱視為觀望，不逆勢做空
-            if not uptrend:
-                signal = "SELL"
-            else:
-                assumptions.append("多頭中短期轉弱→觀望不做空")
+        conf = 0.5
+        score = 0.0
+        if uptrend:
+            assumptions.append(f"多頭(>MA200,12-1動能{mom_12_1*100:.0f}%)")
+            extended = bias_20 > 0.12 or c_rsi > 75      # 過熱/乖離過大 → 不追
+            pullback = (-0.08 <= bias_20 <= 0.03) and (38 <= c_rsi <= 62)  # 回檔到均線附近
+            if extended:
+                assumptions.append("漲多乖離/超買→等回檔")
+            elif pullback:
+                signal = "BUY"; conf = 0.8; score = 2
+                assumptions.append("多頭回檔買點(近MA20/中性RSI)")
+            elif golden and c_rsi < 70:
+                signal = "BUY"; conf = 0.65; score = 1.5
+                assumptions.append("多頭黃金交叉")
+        elif downtrend:
+            assumptions.append("空頭(<MA200,均線空排)")
+            # 反彈到均線附近且未超賣 → 偏空（出場/避開），不抄底
+            if c_rsi >= 50 and bias_20 >= -0.02:
+                signal = "SELL"; conf = 0.7; score = -2
+                assumptions.append("空頭反彈賣點")
+        else:
+            assumptions.append("盤整/趨勢不明→觀望")
 
         # 計算停損 (ATR 或 MA 支撐)
         stop_loss = c_ma50 if c_price > c_ma50 else c_ma200
 
         return StrategyResult(
             signal=signal,
-            confidence=0.8 if abs(score) >= 2 else 0.5,
-            reason=f"Score: {score} | RSI: {c_rsi:.1f} | 52w Pos: +{dist_low_52w:.1f}%",
+            confidence=conf,
+            reason=f"{'/'.join(assumptions[:2])} | RSI {c_rsi:.0f} | 乖離{bias_20*100:.1f}%",
             risk_penalty=0.0,
             stop_loss=float(f"{stop_loss:.2f}"),
             scores={"tech_score": score},
