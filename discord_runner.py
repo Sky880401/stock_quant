@@ -50,22 +50,24 @@ class ConfirmView(discord.ui.View):
         self.tier = tier
         self.value = None
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """集中守門：只有發起 !a 的本人能操作這組按鈕，其他人點擊一律擋下。"""
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "⛔ 這是別人的查詢，請自己打 `!a 代號` 查詢喔。", ephemeral=True)
+            return False
+        return True
+
     @discord.ui.button(label="✅ 確認分析", style=discord.ButtonStyle.green)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user != self.ctx.author:
-            await interaction.response.send_message("這不是你的按鈕！", ephemeral=True)
-            return
-        
         if not self.is_admin:
             deduct_quota(self.user_id, self.tier)
-        
         await interaction.response.send_message(f"🚀 BMO 啟動！正在為 **{self.stock_name}** 進行深度運算...", ephemeral=False)
         self.value = True
         self.stop()
 
     @discord.ui.button(label="❌ 取消", style=discord.ButtonStyle.red)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user != self.ctx.author: return
         await interaction.response.send_message("已取消 (本次不扣除額度)。", ephemeral=True)
         self.value = False
         self.stop()

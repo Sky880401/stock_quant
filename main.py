@@ -266,9 +266,20 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
     avg_win_ratio = backtest_info.get("avg_win_ratio", 1.5) if backtest_info else 1.5
     avg_loss_ratio = backtest_info.get("avg_loss_ratio", 1.0) if backtest_info else 1.0
     
+    # [P4] Kelly 倉位優先用 P1 實測命中率（樣本足夠時），否則退回回測勝率
+    kelly_wr = win_rate / 100 if win_rate > 1 else win_rate
+    wr_source = f"回測{win_rate}%"
+    try:
+        from utils.strategy_weights import get_hit_rate
+        p1_rate, p1_n = get_hit_rate(strategy_type)
+        if p1_rate is not None:
+            kelly_wr = p1_rate / 100.0
+            wr_source = f"P1實測{p1_rate}%({p1_n}筆)"
+    except Exception:
+        pass
+
     # 計算Kelly建議頭寸
-    kelly_position = calculate_kelly_position(win_rate / 100 if win_rate > 1 else win_rate, 
-                                             avg_win_ratio, avg_loss_ratio, base_kelly_position)
+    kelly_position = calculate_kelly_position(kelly_wr, avg_win_ratio, avg_loss_ratio, base_kelly_position)
     
     # 根據ATR調整Kelly頭寸
     if atr_pct < 2.0: atm_limit = 1.0  # 低波動可用滿Kelly
@@ -320,6 +331,7 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
         "inst_insight": (inst_res or {}).get('reason', ''),
         "tech_insight": f"RSI={rsi_val:.1f}, KD={kd_res['signal']}, MACD={macd_status}",
         "p4_weight": f"{p4_mult:.2f}x ({p4_src})",
+        "position_basis": f"倉位勝率來源：{wr_source}",
         # [修改] 強制四捨五入到小數點第二位
         "stop_loss_price": round(key_level_price, 2),
         "stop_loss_desc": key_level_desc,

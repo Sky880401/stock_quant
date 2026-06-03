@@ -19,6 +19,21 @@ def _rate_to_weight(hit_rate: float) -> float:
     return max(WEIGHT_FLOOR, min(WEIGHT_CEIL, w))
 
 
+def get_hit_rate(strategy_type: str, min_samples: int = MIN_SAMPLES):
+    """回傳該策略的 P1 實測命中率 (rate_pct, n)；樣本不足回 (None, n)。"""
+    try:
+        from utils.prediction_log import accuracy_summary
+        s = accuracy_summary()
+        for b in s.get("by_strategy", []):
+            if b["strategy"] == strategy_type:
+                if b["n"] >= min_samples:
+                    return b["rate"], b["n"]
+                return None, b["n"]
+    except Exception:
+        pass
+    return None, 0
+
+
 def get_strategy_multiplier(strategy_type: str) -> tuple:
     """回傳 (multiplier, source_desc)。source 標明用 P1 真實命中率或預設。"""
     try:
