@@ -7,6 +7,19 @@ class ValuationStrategy(BaseStrategy):
             return StrategyResult("UNKNOWN", 0.0, "No fundamental data", risk_penalty=0.3)
 
         ticker = extra_data.get("ticker", "UNKNOWN")
+
+        # ETF（台股代號 00 開頭，如 0050/0056/00878）沒有個股本益比意義，
+        # 套個股估值會誤判（曾把 0050 判成 SELL）。直接回中性、不扣分。
+        code = str(ticker).split(".")[0]
+        if code.startswith("00"):
+            return StrategyResult(
+                signal="HOLD",
+                confidence=0.0,
+                reason="ETF/基金，不適用個股估值",
+                risk_penalty=0.0,
+                assumptions=["ETF：以追蹤指數/配息為主，略過 PE/PB 估值"],
+            )
+
         pe = extra_data.get("pe_ratio")
         pb = extra_data.get("pb_ratio")
 
