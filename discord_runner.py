@@ -1003,6 +1003,49 @@ async def seed_predictions(ctx, ticker: str = None):
         await ctx.send(f"❌ 補考失敗: {str(e)}")
 
 
+@bot.command(name="health", aliases=["體檢", "汰弱留強"])
+async def strategy_health(ctx):
+    """策略健康檢查：依 P1 實測命中率汰弱留強，標出哪些可真金下注、哪些該停用。"""
+    try:
+        await ctx.defer()
+        from utils.strategy_weights import MIN_SAMPLES
+        HEALTHY, MARGIN = 53.0, 48.0   # 命中率門檻：>=53 健康、48-53 邊緣、<48 不及格
+        s = await asyncio.to_thread(accuracy_summary)
+        if s["closed"] == 0:
+            await ctx.send("🩺 尚無已結算預測可體檢。先用 `!seed` 補考或等預測到期。")
+            return
+
+        healthy = weak = pending = 0
+        lines = [
+            "🩺 策略健康體檢（依 P1 實測命中率）",
+            f"整體：{s['hit_rate']}% 命中｜{s['closed']} 筆已結算｜平均報酬 {s['avg_return']}%",
+            f"門檻：≥{HEALTHY:.0f}% 可下注、{MARGIN:.0f}-{HEALTHY:.0f}% 謹慎、<{MARGIN:.0f}% 建議停用",
+            "",
+        ]
+        for b in sorted(s["by_strategy"], key=lambda x: -x["rate"]):
+            rate, n = b["rate"], b["n"]
+            if n < MIN_SAMPLES:
+                verdict = f"⏳ 樣本不足({n}/{MIN_SAMPLES})，先別重押"; pending += 1
+            elif rate >= HEALTHY:
+                verdict = "✅ 健康，可真金下注"; healthy += 1
+            elif rate >= MARGIN:
+                verdict = "🟡 邊緣，謹慎小倉"
+            else:
+                verdict = "🔴 不及格，建議停用/重調"; weak += 1
+            lines.append(f"{b['strategy']}：{rate}%（{b['hits']}/{n}）→ {verdict}")
+
+        lines.append("")
+        if healthy:
+            lines.append(f"結論：{healthy} 個策略達標可下注、{weak} 個建議停用。Kelly 已自動依命中率縮放倉位。")
+        else:
+            lines.append("結論：目前沒有策略命中率達標，系統會把倉位壓很小保護你——這是對的，先別大注。")
+        lines.append("樣本外穩定性再用 !validate <代號> 交叉確認。")
+        await ctx.send("\n".join(lines))
+    except Exception as e:
+        log_error(f"!health 失敗: {e}")
+        await ctx.send(f"❌ 體檢失敗: {str(e)}")
+
+
 @bot.command(name="bind")
 async def bind_channel(ctx):
     bot.target_channel_id = ctx.channel.id
