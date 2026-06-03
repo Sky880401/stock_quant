@@ -58,11 +58,15 @@ def get_stock_frame(stock_id):
         return None
     df = res["df"][["Close", "Volume", "Foreign", "Trust"]].copy()
     yoy = _month_revenue_yoy(stock_id)
+    df["rev_yoy"] = float("nan")
     if len(yoy):
-        s = yoy.reindex(df.index.union(yoy.index)).sort_index().ffill()
-        df["rev_yoy"] = s.reindex(df.index)
-    else:
-        df["rev_yoy"] = float("nan")
+        import numpy as np
+        # 交易日索引正規化為 tz-naive datetime64，避免與 yoy 生效日對不齊
+        idx = pd.DatetimeIndex(df.index).tz_localize(None) if getattr(df.index, "tz", None) else pd.DatetimeIndex(df.index)
+        ev = pd.DatetimeIndex(yoy.index).values.astype("datetime64[ns]")
+        vals = yoy.values
+        pos = np.searchsorted(ev, idx.values.astype("datetime64[ns]"), side="right") - 1
+        df["rev_yoy"] = [round(float(vals[p]), 1) if p >= 0 else float("nan") for p in pos]
     return df
 
 
