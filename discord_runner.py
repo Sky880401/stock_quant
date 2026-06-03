@@ -864,10 +864,15 @@ async def show_accuracy(ctx):
             f"平均報酬：{s['avg_return']}%",
         ]
         if s["by_strategy"]:
+            from utils.strategy_weights import MIN_SAMPLES
             lines.append("")
-            lines.append("各策略：")
+            lines.append(f"各策略（Kelly 採用門檻 {MIN_SAMPLES} 筆）：")
             for b in s["by_strategy"][:6]:
-                lines.append(f"{b['strategy']}：{b['rate']}%（{b['hits']}/{b['n']}）")
+                if b["n"] >= MIN_SAMPLES:
+                    mark = "✅ 倉位已用P1實測"
+                else:
+                    mark = f"⏳ 還需{MIN_SAMPLES - b['n']}筆(暫用回測)"
+                lines.append(f"{b['strategy']}：{b['rate']}%（{b['hits']}/{b['n']}）{mark}")
         lines.append("")
         lines.append("註：命中＝看多後實際漲、看空後實際跌。合理目標 53-57%。")
         await ctx.send("\n".join(lines))
@@ -917,6 +922,59 @@ async def validate_strategy(ctx, ticker: str = None):
     except Exception as e:
         log_error(f"!validate 失敗: {e}")
         await ctx.send(f"❌ 驗證失敗: {str(e)}")
+
+
+@bot.command(name="說明", aliases=["指令", "helpme", "menu"])
+async def show_help(ctx):
+    """指令總覽（限 bot 擁有者本人）。"""
+    if not await bot.is_owner(ctx.author):
+        await ctx.send("⛔ 此指令僅限擁有者使用。")
+        return
+    lines = [
+        "📖 BMO 指令總覽（僅你可見）",
+        "",
+        "【查詢分析】",
+        "!a <代號/股名> — 深度診斷（例 !a 2330 / !a 台積電 / !a 0050）",
+        "!accuracy — 歷史預測命中率 + 各策略 Kelly 採用狀態",
+        "!validate <代號> — walk-forward 樣本外驗證（防過擬合）",
+        "!策略 — 目前分析用到的策略清單",
+        "!strategies — 策略回測績效表（可加 detail / sort:sharpe / category:ml）",
+        "",
+        "【管理 · 限你】",
+        "!gift @用戶 <次數> — 一次性加值查詢額度（別名 !quota !give）",
+        "!model — 切換 AI 交談模型",
+        "!說明 — 本清單（別名 !指令 !menu）",
+        "",
+        "【訓練/其他】",
+        "!train <策略> <代號> <時間段> — 眾包參數優化；!train-status <id>；!train-history",
+        "!period [策略] — 時間段回測｜!hotlist — 熱搜排行｜!bind — 綁定本頻道",
+    ]
+    await ctx.send("\n".join(lines))
+
+
+@bot.command(name="策略", aliases=["strategylist", "strat"])
+async def list_active_strategies(ctx):
+    """列出目前分析實際使用的策略。"""
+    lines = [
+        "🧠 BMO 目前使用的策略",
+        "",
+        "【主策略】回測錦標賽挑勝率最高者當主訊號：",
+        "Trend (MA) — 均線順勢",
+        "Reversion (RSI) — RSI 乖離逆勢",
+        "Momentum (MACD) — MACD 動能",
+        "Swing (KD) — KD 短線轉折",
+        "PriceAction (Pullback) — 回後上漲型態",
+        "",
+        "【輔助訊號】與主策略融合：",
+        "Fundamental (Valuation) — 本益比/淨值比估值（ETF 自動略過）",
+        "Chip — 三大法人籌碼（外資/投信/自營）",
+        "Institutional — 法人連續買賣超動能",
+        "ML (Adaptive) — 機器學習輔助",
+        "",
+        "【風險/倉位】Bollinger 布林、ATR 波動率、Kelly 倉位（優先用 P1 實測命中率）",
+        "績效數字看 !strategies｜樣本外穩定性看 !validate <代號>",
+    ]
+    await ctx.send("\n".join(lines))
 
 
 @bot.command(name="bind")
