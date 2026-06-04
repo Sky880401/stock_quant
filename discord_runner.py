@@ -133,12 +133,15 @@ def resolve_ticker_info(ticker_input):
     if raw in STOCK_MAP: return f"{STOCK_MAP[raw]}.TW", raw
     for name, stock_id in STOCK_MAP.items():
         if raw in name: return f"{stock_id}.TW", name
+    # 純英數字代號（如 AAPL、TSLA、BRK-B）→ 視為美股，用 yfinance 取公司全名
+    if all(c.isalnum() or c in ".-" for c in raw):
+        return raw, get_stock_name_zh(raw)
     return raw, raw
 
 @bot.command(name="analyze", aliases=["a"])
 async def analyze_stock(ctx, ticker: str = None):
     if not ticker:
-        await ctx.send("請輸入代號或股名，例如 `!a 2330`")
+        await ctx.send("請輸入代號或股名，台股例 `!a 2330`，美股例 `!a AAPL`")
         return
 
     user_id = ctx.author.id
@@ -934,7 +937,7 @@ async def show_help(ctx):
         "📖 BMO 指令總覽（僅你可見）",
         "",
         "【查詢分析】",
-        "!a <代號/股名> — 深度診斷（例 !a 2330 / !a 台積電 / !a 0050）",
+        "!a <代號/股名> — 深度診斷（台股例 !a 2330 / !a 台積電 / !a 0050；美股例 !a AAPL / !a TSLA）",
         "!accuracy — 歷史預測命中率 + 各策略 Kelly 採用狀態",
         "!health — 策略健康體檢，依命中率汰弱留強（別名 !體檢）",
         "!validate <代號> — walk-forward 樣本外驗證（防過擬合）",
