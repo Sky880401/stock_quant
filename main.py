@@ -497,8 +497,9 @@ def generate_moltbot_prompt(data, is_single=False):
         ticker = data['meta']['ticker']
         name = data['meta'].get('name', ticker)
         dec = data['final_decision']
-        strat = data['backtest_insight'].get('strategy_type', 'Trend')
-        win_rate = data['backtest_insight'].get('win_rate_display', 'N/A')
+        bi = data.get('backtest_insight') or {}      # 美股/無回測參數時為 None，需防呆
+        strat = bi.get('strategy_type', 'Trend')
+        win_rate = bi.get('win_rate_display', 'N/A')
         
         logic_desc = "順勢操作"
         if strat == "Reversion (RSI)": logic_desc = "逆勢乖離操作"
@@ -537,7 +538,7 @@ def generate_moltbot_prompt(data, is_single=False):
 1. **📊 綜合評級**: 
    - 請列點顯示 Action、倉位、**策略模型** (這是使用者最關心的，請務必列出)、關鍵價位。
 2. **🧠 決策邏輯**: 
-   - 解釋為何選擇 {data['backtest_insight'].get('strategy_type')}。
+   - 解釋為何選擇 {(data.get('backtest_insight') or {}).get('strategy_type', 'Trend')}。
    - 分析目前技術面多空。
 3. **💰 獲利空間 (機率化)**:
    - 根據 profit_space 欄位說明：持有約 N 交易日的上漲機率、期望報酬、目標價區間(target_low~target_high)、下檔風險。
