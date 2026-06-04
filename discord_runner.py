@@ -225,7 +225,7 @@ async def gift_quota(ctx, member: discord.Member, amount: int):
         f"🎁 已給 **{member.display_name}** 額外 {amount} 次查詢額度（一次性）！\n"
         f"目前加值餘額：**{new_bonus} 次**（用完才歸零，每日免費額度照常）")
 
-@bot.command(name="hotlist", aliases=["hotrank", "rank"])
+@bot.command(name="hotlist", aliases=["hotrank"])
 async def show_hotlist(ctx):
     """
     顯示每日熱搜排行榜
