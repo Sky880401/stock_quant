@@ -52,8 +52,11 @@ def fetch_day(date_yyyymmdd: str) -> dict:
     except Exception as e:
         print(f"TWSE T86 {date_yyyymmdd} 抓取失敗: {e}")
         return {}   # 失敗不快取，下次重試
-    with open(path, "w") as f:
-        json.dump(out, f)
+    # ⚠️ 只在「真的有資料」時才快取；盤中尚未公布(空)時不要寫檔，
+    # 否則會把當日法人永久卡成 0（曾導致最新交易日法人全 0 的 bug）。
+    if out:
+        with open(path, "w") as f:
+            json.dump(out, f)
     return out
 
 

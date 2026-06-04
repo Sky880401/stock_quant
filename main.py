@@ -92,28 +92,49 @@ def fetch_stock_data_smart(stock_id: str):
     return {"status": "error", "reason": last_error}
 
 def analyze_chip(df):
-    if 'Foreign' not in df.columns: return {"score": 0, "status": "Neutral", "reason": "無籌碼"}
-    recent = df.tail(5)
+    """三大法人籌碼：用『最新有公布的單一交易日』，單位為張(股數/1000)，
+    並以該日當日漲跌判斷背離（修正過去用5日加總+標錯k張+用5日前比價的bug）。"""
     for col in ('Foreign', 'Trust', 'Dealer'):
         if col not in df.columns:
             df[col] = 0
-    foreign_sum = recent['Foreign'].fillna(0).sum()
-    trust_sum = recent['Trust'].fillna(0).sum()
-    dealer_sum = recent['Dealer'].fillna(0).sum()
-    score = 0; reasons = []
-    # 外資（量大、趨勢主導）
-    if foreign_sum > 1000: score += 1; reasons.append(f"外資買超 {int(foreign_sum/1000)}k")
-    elif foreign_sum < -1000: score -= 1; reasons.append(f"外資賣超 {int(abs(foreign_sum)/1000)}k")
-    # 投信（台股強短線訊號，作帳/認養）
-    if trust_sum > 500: score += 0.7; reasons.append(f"投信買超 {int(trust_sum/1000)}k")
-    elif trust_sum < -500: score -= 0.7; reasons.append(f"投信賣超 {int(abs(trust_sum)/1000)}k")
-    # 自營商（短線指標，權重低）
-    if dealer_sum > 1000: score += 0.3; reasons.append("自營偏多")
-    elif dealer_sum < -1000: score -= 0.3; reasons.append("自營偏空")
-    if not reasons: reasons.append("三大法人觀望")
-    # 價漲但法人合計賣超 → 背離警訊
-    if (df['Close'].iloc[-1] > df['Close'].iloc[-5]) and (foreign_sum + trust_sum) < 0:
-        reasons.append("⚠️價漲法人卻賣超(背離)"); score -= 0.5
+    if len(df) < 2:
+        return {"score": 0, "status": "Neutral", "reason": "無籌碼資料"}
+    inst = df[['Foreign', 'Trust', 'Dealer']].fillna(0)
+    # 最新日盤中可能尚未公布(全0)，往前找最近「有資料」的交易日
+    idx = None
+    for i in range(len(df) - 1, max(-1, len(df) - 6), -1):
+        if (inst.iloc[i] != 0).any():
+            idx = i; break
+    if idx is None:
+        return {"score": 0, "status": "Neutral", "reason": "近日無法人資料"}
+
+    lots = lambda v: int(round(v / 1000))          # 股 → 張
+    fl, tl, dl = lots(inst['Foreign'].iloc[idx]), lots(inst['Trust'].iloc[idx]), lots(inst['Dealer'].iloc[idx])
+    date_str = df.index[idx].strftime('%m/%d')
+    prev_close = df['Close'].iloc[idx - 1] if idx > 0 else df['Close'].iloc[idx]
+    chg = df['Close'].iloc[idx] - prev_close
+    chg_pct = (chg / prev_close * 100) if prev_close else 0.0
+
+    def fmt(l, who):
+        return f"{who}買超{l}張" if l > 0 else (f"{who}賣超{abs(l)}張" if l < 0 else f"{who}持平")
+
+    score = 0.0
+    reasons = [f"{date_str} {fmt(fl,'外資')}、{fmt(tl,'投信')}、{fmt(dl,'自營')}"]
+    if fl > 3000: score += 1
+    elif fl < -3000: score -= 1
+    elif fl > 500: score += 0.4
+    elif fl < -500: score -= 0.4
+    if tl > 1000: score += 0.7
+    elif tl < -1000: score -= 0.7
+    if dl > 1000: score += 0.3
+    elif dl < -1000: score -= 0.3
+
+    inst_net = fl + tl
+    if chg > 0 and inst_net < 0:
+        reasons.append("⚠️當日價漲但法人賣超(背離)"); score -= 0.5
+    elif chg < 0 and inst_net > 0:
+        reasons.append("當日價跌但法人買超(止穩訊號)"); score += 0.3
+    reasons.append(f"當日{'漲' if chg >= 0 else '跌'}{abs(round(chg,2))}元({round(chg_pct,1)}%)")
     status = "Bullish" if score > 0.5 else ("Bearish" if score < -0.5 else "Neutral")
     return {"score": round(score, 2), "status": status, "reason": " | ".join(reasons)}
 

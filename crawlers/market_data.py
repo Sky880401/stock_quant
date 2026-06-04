@@ -53,29 +53,39 @@ def margin_trend(stock_id: str, days: int = 20) -> dict:
     if not clean.isdigit():
         return {"status": "N/A", "reason": "非台股代號", "score": 0}
     try:
+        import os as _os
         from FinMind.data import DataLoader
         dl = DataLoader()
-        start = (datetime.now() - timedelta(days=days * 2)).strftime("%Y-%m-%d")
+        tok = _os.getenv("FINMIND_TOKEN")
+        if tok:
+            try: dl.login_by_token(api_token=tok)
+            except Exception: pass
+        start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
         end = datetime.now().strftime("%Y-%m-%d")
         df = dl.taiwan_stock_margin_purchase_short_sale(
             stock_id=clean, start_date=start, end_date=end)
-        if df is None or df.empty:
+        if df is None or df.empty or len(df) < 2:
             return {"status": "N/A", "reason": "無融資券資料", "score": 0}
-        df = df.tail(days)
-        # MarginPurchaseTodayBalance=融資餘額, ShortSaleTodayBalance=融券餘額
-        margin_chg = df["MarginPurchaseTodayBalance"].iloc[-1] - df["MarginPurchaseTodayBalance"].iloc[0]
-        short_chg = df["ShortSaleTodayBalance"].iloc[-1] - df["ShortSaleTodayBalance"].iloc[0]
-        reasons, score = [], 0
+        df = df.sort_values("date")
+        # 當日變化 = 最新一日餘額 - 前一日餘額（單位：張）。MarginPurchase=融資, ShortSale=融券
+        mlast, mprev = df["MarginPurchaseTodayBalance"].iloc[-1], df["MarginPurchaseTodayBalance"].iloc[-2]
+        slast, sprev = df["ShortSaleTodayBalance"].iloc[-1], df["ShortSaleTodayBalance"].iloc[-2]
+        margin_chg = int(mlast - mprev)
+        short_chg = int(slast - sprev)
+        dstr = str(df["date"].iloc[-1])[5:]
+        reasons, score = [f"{dstr}當日:"], 0
         if margin_chg > 0:
-            reasons.append(f"融資近{days}日增{int(margin_chg)}張(散戶追價)")
-            score -= 0.5
+            reasons.append(f"融資增{margin_chg}張(散戶追價)"); score -= 0.5
         elif margin_chg < 0:
-            reasons.append(f"融資減{int(abs(margin_chg))}張(籌碼沉澱)")
-            score += 0.5
+            reasons.append(f"融資減{abs(margin_chg)}張(籌碼沉澱)"); score += 0.5
+        else:
+            reasons.append("融資持平")
         if short_chg > 0:
-            reasons.append(f"融券增{int(short_chg)}張(空方/軋空潛力)")
+            reasons.append(f"融券增{short_chg}張(空方/軋空潛力)")
+        elif short_chg < 0:
+            reasons.append(f"融券減{abs(short_chg)}張")
         status = "偏空(資增)" if score < 0 else ("偏多(資減)" if score > 0 else "中性")
-        return {"status": status, "reason": " | ".join(reasons) or "變動不大", "score": score,
-                "margin_change": int(margin_chg), "short_change": int(short_chg)}
+        return {"status": status, "reason": " | ".join(reasons), "score": score,
+                "margin_change": margin_chg, "short_change": short_chg}
     except Exception as e:
         return {"status": "N/A", "reason": f"融資券抓取失敗:{str(e)[:40]}", "score": 0}
