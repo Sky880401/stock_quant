@@ -29,7 +29,17 @@ FALLBACK_SOURCE = "yfinance"
 
 def get_stock_name_zh(stock_id: str) -> str:
     clean_id = stock_id.split('.')[0]
-    if not clean_id.isdigit(): return stock_id
+    if not clean_id.isdigit():
+        # 非台股代號（含美股）→ 用 yfinance 取公司全名；失敗就回代號本身
+        try:
+            import yfinance as yf
+            info = yf.Ticker(clean_id).info
+            name = info.get("longName") or info.get("shortName")
+            if name:
+                return f"{name} ({clean_id})"
+        except Exception:
+            pass
+        return clean_id
     try:
         from FinMind.data import DataLoader
         dl = DataLoader()
@@ -61,7 +71,7 @@ def fetch_stock_data_smart(stock_id: str):
             fundamentals = {}
             try: fundamentals = provider.get_fundamentals(clean_id)
             except: pass
-            if (not fundamentals or not fundamentals.get("pe_ratio")) and clean_id.isdigit():
+            if not fundamentals or not fundamentals.get("pe_ratio"):
                 try:
                     yf_provider = get_data_provider(FALLBACK_SOURCE)
                     yf_funds = yf_provider.get_fundamentals(current_id)
@@ -364,7 +374,8 @@ def analyze_single_target(stock_id: str, run_optimization_if_missing: bool = Fal
         except: pass
     if not backtest_info and run_optimization_if_missing:
         log_info(f"啟動 V10.1 策略錦標賽 (UI Polish): {clean_id}")
-        target_input = f"{clean_id}.TW"
+        # 美股代號（非純數字）直接用原代號，台股才補 .TW
+        target_input = f"{clean_id}.TW" if clean_id.isdigit() else clean_id
         new_params = find_best_params(target_input)
         if new_params:
             config[clean_id] = new_params
