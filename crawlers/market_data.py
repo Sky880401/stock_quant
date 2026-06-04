@@ -84,8 +84,21 @@ def margin_trend(stock_id: str, days: int = 20) -> dict:
             reasons.append(f"融券增{short_chg}張(空方/軋空潛力)")
         elif short_chg < 0:
             reasons.append(f"融券減{abs(short_chg)}張")
+        # 借券賣出餘額淨增（SBL，外資/法人放空管道，比融券更能反映法人空方）
+        sbl_chg = 0
+        try:
+            sb = dl.taiwan_daily_short_sale_balances(stock_id=clean, start_date=start, end_date=end)
+            if sb is not None and not sb.empty:
+                sr = sb.sort_values("date").iloc[-1]
+                sbl_chg = int((sr["SBLShortSalesCurrentDayBalance"] - sr["SBLShortSalesPreviousDayBalance"]) / 1000)
+                if sbl_chg > 0:
+                    reasons.append(f"借券賣出餘額增{sbl_chg}張(法人空方增)"); score -= 0.3
+                elif sbl_chg < 0:
+                    reasons.append(f"借券賣出餘額減{abs(sbl_chg)}張(空方回補)"); score += 0.3
+        except Exception:
+            pass
         status = "偏空(資增)" if score < 0 else ("偏多(資減)" if score > 0 else "中性")
         return {"status": status, "reason": " | ".join(reasons), "score": score,
-                "margin_change": margin_chg, "short_change": short_chg}
+                "margin_change": margin_chg, "short_change": short_chg, "sbl_change": sbl_chg}
     except Exception as e:
         return {"status": "N/A", "reason": f"融資券抓取失敗:{str(e)[:40]}", "score": 0}

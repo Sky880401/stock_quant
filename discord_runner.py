@@ -940,6 +940,7 @@ async def show_help(ctx):
         "!a <代號/股名> — 深度診斷（台股例 !a 2330 / !a 台積電 / !a 0050；美股例 !a AAPL / !a TSLA）",
         "!accuracy — 歷史預測命中率 + 各策略 Kelly 採用狀態",
         "!health — 策略健康體檢，依命中率汰弱留強（別名 !體檢）",
+        "!rank [n] — 每日橫截面選股排行(做多前段/避開後段，別名 !排行)",
         "!validate <代號> — walk-forward 樣本外驗證（防過擬合）",
         "!策略 — 目前分析用到的策略清單",
         "!strategies — 策略回測績效表（可加 detail / sort:sharpe / category:ml）",
@@ -1050,6 +1051,39 @@ async def strategy_health(ctx):
     except Exception as e:
         log_error(f"!health 失敗: {e}")
         await ctx.send(f"❌ 體檢失敗: {str(e)}")
+
+
+@bot.command(name="rank", aliases=["排行", "選股"])
+async def rank_stocks(ctx, n: int = 8):
+    """每日橫截面選股排行：綜合動能+月營收+法人，做多前段、避開後段。"""
+    try:
+        await ctx.defer()
+        from quant.ranker import rank_universe
+        n = max(3, min(n, 15))
+        as_of, top, bottom = await asyncio.to_thread(rank_universe, n)
+        if not top:
+            await ctx.send("❌ 排行資料不足（panel 尚未建好或因子缺值）")
+            return
+        def nm(sid):
+            return get_stock_name_zh(f"{sid}.TW")
+        lines = [f"📈 BMO 選股排行（{as_of.strftime('%m/%d')}，綜合動能+月營收YoY+法人）", "",
+                 f"🟢 做多候選 Top{len(top)}："]
+        for i, r in enumerate(top, 1):
+            lines.append(f"{i}. {sid_disp(r['sid'])} {nm(r['sid'])}｜分{r['score']}｜動能{r['mom']}% 營收YoY{r['revyoy']}% 法人佔量{r['inst']}%")
+        lines.append("")
+        lines.append(f"🔴 相對弱勢（避開）：")
+        for r in bottom[:5]:
+            lines.append(f"・{sid_disp(r['sid'])} {nm(r['sid'])}｜分{r['score']}")
+        lines.append("")
+        lines.append("註：此為相對強弱排序(非保證漲跌)，回測IC正向但偏弱，僅供參考。")
+        await send_long(ctx, "\n".join(lines))
+    except Exception as e:
+        log_error(f"!rank 失敗: {e}")
+        await ctx.send(f"❌ 排行產生失敗: {str(e)}")
+
+
+def sid_disp(sid):
+    return str(sid)
 
 
 @bot.command(name="bind")

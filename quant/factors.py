@@ -79,3 +79,28 @@ def cross_section_scores(fts: dict, date, min_liquidity=2e7, weights=None):
     zs = {c: _zscore(raw[c]) for c in FACTOR_COLS}
     composite = sum(weights[c] * zs[c] for c in FACTOR_COLS) / sum(weights.values())
     return {sid: float(composite[sid]) for sid in raw.index}
+
+
+def cross_section_table(fts: dict, date, min_liquidity=2e7, weights=None):
+    """同 cross_section_scores，但回傳含各因子原始值與 z-score 的 DataFrame（供 !rank 顯示）。"""
+    weights = weights or {c: 1.0 for c in FACTOR_COLS}
+    rows = {}
+    for sid, f in fts.items():
+        sub = f.loc[:date]
+        if len(sub) == 0:
+            continue
+        row = sub.iloc[-1]
+        if row[FACTOR_COLS].isna().any() or pd.isna(row["dollar_vol"]) or row["dollar_vol"] < min_liquidity:
+            continue
+        rows[sid] = row
+    if len(rows) < 10:
+        return pd.DataFrame()
+    raw = pd.DataFrame(rows).T
+    out = pd.DataFrame(index=raw.index)
+    comp = 0
+    for c in FACTOR_COLS:
+        z = _zscore(raw[c]); out["z_" + c] = z; comp = comp + weights[c] * z
+    out["score"] = comp / sum(weights.values())
+    for c in FACTOR_COLS:
+        out[c] = raw[c].astype(float)
+    return out.sort_values("score", ascending=False)
