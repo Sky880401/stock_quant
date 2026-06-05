@@ -969,7 +969,7 @@ async def show_help(ctx):
         "!a <代號/股名> — 深度診斷（台股例 !a 2330 / !a 台積電 / !a 0050；美股例 !a AAPL / !a TSLA）",
         "!accuracy — 歷史預測命中率 + 各策略 Kelly 採用狀態",
         "!health — 策略健康體檢，依命中率汰弱留強（別名 !體檢）",
-        "!rank [n] — 每日橫截面選股排行(做多前段/避開後段，別名 !排行)",
+        "!rank [n] — 每日橫截面選股排行(做多前段/避開後段，別名 !排行；每日 17:30 台北自動推播至綁定頻道)",
         "!validate <代號> — walk-forward 樣本外驗證（防過擬合）",
         "!策略 — 目前分析用到的策略清單",
         "!strategies — 策略回測績效表（可加 detail / sort:sharpe / category:ml）",
