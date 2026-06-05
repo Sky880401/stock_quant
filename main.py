@@ -257,6 +257,18 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
         if tech_signal == "BUY": score += tech_weight
         elif tech_signal == "SELL": score -= tech_weight
 
+    # [使用者反饋] RSI 反應太快易誤判，補上 KD + MACD 作為「慢速確認」層。
+    # 不論主策略為何都生效：KD、MACD 兩者同向時才小幅加減分，過濾 RSI 的雜訊。
+    confirm_weight = 0.08
+    macd_dir = 1 if "BUY" in macd_status else (-1 if "SELL" in macd_status else 0)
+    kd_dir = 1 if kd_res['signal'] == "BUY" else (-1 if kd_res['signal'] == "SELL" else 0)
+    if macd_dir != 0 and macd_dir == kd_dir:
+        # 兩個慢速指標一致 → 完整確認分數
+        score += confirm_weight * macd_dir
+    elif macd_dir + kd_dir != 0:
+        # 只有一個表態（另一個中性）→ 半分
+        score += confirm_weight * 0.5 * (macd_dir + kd_dir)
+
     if chip_res['score'] > 0: score += chip_weight
     elif chip_res['score'] < 0: score -= chip_weight
     if fund_signal == "BUY": score += fund_weight
