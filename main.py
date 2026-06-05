@@ -152,6 +152,19 @@ def calculate_macd_signal(df):
         return status, curr_macd - curr_sig
     except: return "NEUTRAL", 0.0
 
+def calculate_rsi_series(df, period=14):
+    """回傳整條 RSI 序列（Wilder 平滑），供去抖動使用。"""
+    try:
+        delta = df['Close'].diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
+        rs = avg_gain / avg_loss.replace(0, 1e-9)
+        return 100 - (100 / (1 + rs))
+    except Exception:
+        return None
+
 def calculate_atr(df, period=14):
     try:
         high = df['High']; low = df['Low']; close = df['Close'].shift(1)
@@ -190,6 +203,14 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
     strategy_type = backtest_info.get("strategy_type", "Trend (MA)") if backtest_info else "Trend (MA)"
     win_rate = backtest_info.get("win_rate", 0) if backtest_info else 0
     macd_status, macd_hist = calculate_macd_signal(df)
+    # [使用者反饋] RSI 反應太快易誤判 → 對 RSI 序列做短期 EMA 平滑去抖動，
+    # 用平滑後的值來觸發 Reversion 計分；rsi_val(原始) 仍保留供 tech_insight 回報。
+    rsi_eff = rsi_val
+    _rsi_series = calculate_rsi_series(df)
+    if _rsi_series is not None and len(_rsi_series.dropna()) >= 3:
+        _rsi_smooth = _rsi_series.ewm(span=3, adjust=False).mean().iloc[-1]
+        if pd.notna(_rsi_smooth):
+            rsi_eff = float(_rsi_smooth)
     atr = calculate_atr(df)
     atr_pct = (atr / current_price) * 100
 
@@ -226,20 +247,21 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
         p4_mult, p4_src = 1.0, "預設"
     
     # [策略計分區塊 - 動態權重版本]
+    score_before_tech = score  # 記錄技術面計分前的分數，供 RSI 閘門削減用
     if strategy_type == "Reversion (RSI)":
         # 順勢均值回歸：多頭買回檔、空頭賣反彈，不逆勢對作（這是原本命中率低的主因）
         ma200_now = df['Close'].rolling(200).mean().iloc[-1]
         in_uptrend = current_price > ma200_now if pd.notna(ma200_now) else True
         if in_uptrend:
             # 多頭：超賣是買點；不因超買而做空（順勢續抱）
-            if rsi_val <= 40: score += tech_weight
-            elif rsi_val <= 50: score += tech_weight * 0.3
-            elif rsi_val >= 82: score -= tech_weight * 0.3   # 僅極端過熱才略減
+            if rsi_eff <= 40: score += tech_weight
+            elif rsi_eff <= 50: score += tech_weight * 0.3
+            elif rsi_eff >= 82: score -= tech_weight * 0.3   # 僅極端過熱才略減
         else:
             # 空頭：反彈是賣點；不因超賣而抄底（接刀）
-            if rsi_val >= 60: score -= tech_weight
-            elif rsi_val >= 50: score -= tech_weight * 0.3
-            elif rsi_val <= 18: score += tech_weight * 0.3   # 僅極端超跌才略加
+            if rsi_eff >= 60: score -= tech_weight
+            elif rsi_eff >= 50: score -= tech_weight * 0.3
+            elif rsi_eff <= 18: score += tech_weight * 0.3   # 僅極端超跌才略加
     elif strategy_type == "Momentum (MACD)":
         if "BUY" in macd_status: score += tech_weight
         elif "SELL" in macd_status: score -= tech_weight
@@ -257,17 +279,21 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
         if tech_signal == "BUY": score += tech_weight
         elif tech_signal == "SELL": score -= tech_weight
 
-    # [使用者反饋] RSI 反應太快易誤判，補上 KD + MACD 作為「慢速確認」層。
-    # 不論主策略為何都生效：KD、MACD 兩者同向時才小幅加減分，過濾 RSI 的雜訊。
-    confirm_weight = 0.08
+    # [使用者反饋] RSI 反應太快易誤判 → 把 KD/MACD 從「小幅加分」改成「閘門/否決」。
+    # 僅當主訊號來自 RSI 時介入：MACD 與 KD 兩個慢速指標都與 RSI 訊號反向 → 否決(大幅削減)；
+    # 至少一個慢指標同向 → 放行，維持原 tech_weight 分數。
+    # 主策略本身就是 Momentum(MACD) / Swing(KD) 時不重複計分；Trend / PriceAction 不介入。
     macd_dir = 1 if "BUY" in macd_status else (-1 if "SELL" in macd_status else 0)
     kd_dir = 1 if kd_res['signal'] == "BUY" else (-1 if kd_res['signal'] == "SELL" else 0)
-    if macd_dir != 0 and macd_dir == kd_dir:
-        # 兩個慢速指標一致 → 完整確認分數
-        score += confirm_weight * macd_dir
-    elif macd_dir + kd_dir != 0:
-        # 只有一個表態（另一個中性）→ 半分
-        score += confirm_weight * 0.5 * (macd_dir + kd_dir)
+    if strategy_type == "Reversion (RSI)":
+        tech_delta = score - score_before_tech
+        rsi_dir = 1 if tech_delta > 0 else (-1 if tech_delta < 0 else 0)
+        if rsi_dir != 0:
+            both_oppose = (macd_dir == -rsi_dir) and (kd_dir == -rsi_dir)
+            if both_oppose:
+                # 兩個慢速指標一致反向 → 否決，技術分削減為 0.2 倍
+                score = score_before_tech + tech_delta * 0.2
+                log_info(f"RSI 閘門否決：MACD/KD 皆反向，技術分削減 (rsi_dir={rsi_dir})")
 
     if chip_res['score'] > 0: score += chip_weight
     elif chip_res['score'] < 0: score -= chip_weight
