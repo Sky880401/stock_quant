@@ -72,6 +72,11 @@ class ConfirmView(discord.ui.View):
         self.value = False
         self.stop()
 
+# 每日選股排行自動推播設定（台股 UTC+8，收盤 13:30；於收盤後推播）
+# 06:30 UTC = 14:30 台北時間，可調整。
+RANK_PUSH_TIME_UTC = time(hour=6, minute=30, tzinfo=timezone.utc)
+RANK_PUSH_N = 8
+
 class QuantBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -84,6 +89,28 @@ class QuantBot(commands.Bot):
         await asyncio.to_thread(load_stock_map)
         if not self.daily_scan_task.is_running():
             self.daily_scan_task.start()
+        if not self.daily_rank_task.is_running():
+            self.daily_rank_task.start()
+
+    @tasks.loop(time=RANK_PUSH_TIME_UTC)
+    async def daily_rank_task(self):
+        # 台股收盤後自動推播選股排行到綁定頻道（沿用 !rank 格式與 send_long 分段）
+        if not self.target_channel_id:
+            log_info("⏭️ 排行推播略過：尚未綁定頻道（請先在頻道用 !bind）")
+            return
+        ch = self.get_channel(self.target_channel_id)
+        if ch is None:
+            log_error(f"排行推播略過：找不到頻道 {self.target_channel_id}")
+            return
+        try:
+            text = await build_rank_text(RANK_PUSH_N)
+            if text is None:
+                log_info("⏭️ 排行推播略過：排行資料不足或為空")
+                return
+            await send_long(ch, text)
+            log_info("📈 已自動推播每日選股排行")
+        except Exception as e:
+            log_error(f"排行推播失敗: {e}")
 
     @tasks.loop(time=time(hour=6, minute=0, tzinfo=timezone.utc))
     async def daily_scan_task(self):
@@ -1053,30 +1080,38 @@ async def strategy_health(ctx):
         await ctx.send(f"❌ 體檢失敗: {str(e)}")
 
 
+async def build_rank_text(n: int = 8):
+    """產生 !rank 排行文字；資料不足回傳 None。供指令與排程推播共用。"""
+    from quant.ranker import rank_universe
+    n = max(3, min(n, 15))
+    as_of, top, bottom = await asyncio.to_thread(rank_universe, n)
+    if not top:
+        return None
+    def nm(sid):
+        return get_stock_name_zh(f"{sid}.TW")
+    lines = [f"📈 BMO 選股排行（{as_of.strftime('%m/%d')}，綜合動能+月營收YoY+法人）", "",
+             f"🟢 做多候選 Top{len(top)}："]
+    for i, r in enumerate(top, 1):
+        lines.append(f"{i}. {sid_disp(r['sid'])} {nm(r['sid'])}｜分{r['score']}｜動能{r['mom']}% 營收YoY{r['revyoy']}% 法人佔量{r['inst']}%")
+    lines.append("")
+    lines.append(f"🔴 相對弱勢（避開）：")
+    for r in bottom[:5]:
+        lines.append(f"・{sid_disp(r['sid'])} {nm(r['sid'])}｜分{r['score']}")
+    lines.append("")
+    lines.append("註：此為相對強弱排序(非保證漲跌)，回測IC正向但偏弱，僅供參考。")
+    return "\n".join(lines)
+
+
 @bot.command(name="rank", aliases=["排行", "選股"])
 async def rank_stocks(ctx, n: int = 8):
     """每日橫截面選股排行：綜合動能+月營收+法人，做多前段、避開後段。"""
     try:
         await ctx.defer()
-        from quant.ranker import rank_universe
-        n = max(3, min(n, 15))
-        as_of, top, bottom = await asyncio.to_thread(rank_universe, n)
-        if not top:
+        text = await build_rank_text(n)
+        if text is None:
             await ctx.send("❌ 排行資料不足（panel 尚未建好或因子缺值）")
             return
-        def nm(sid):
-            return get_stock_name_zh(f"{sid}.TW")
-        lines = [f"📈 BMO 選股排行（{as_of.strftime('%m/%d')}，綜合動能+月營收YoY+法人）", "",
-                 f"🟢 做多候選 Top{len(top)}："]
-        for i, r in enumerate(top, 1):
-            lines.append(f"{i}. {sid_disp(r['sid'])} {nm(r['sid'])}｜分{r['score']}｜動能{r['mom']}% 營收YoY{r['revyoy']}% 法人佔量{r['inst']}%")
-        lines.append("")
-        lines.append(f"🔴 相對弱勢（避開）：")
-        for r in bottom[:5]:
-            lines.append(f"・{sid_disp(r['sid'])} {nm(r['sid'])}｜分{r['score']}")
-        lines.append("")
-        lines.append("註：此為相對強弱排序(非保證漲跌)，回測IC正向但偏弱，僅供參考。")
-        await send_long(ctx, "\n".join(lines))
+        await send_long(ctx, text)
     except Exception as e:
         log_error(f"!rank 失敗: {e}")
         await ctx.send(f"❌ 排行產生失敗: {str(e)}")
