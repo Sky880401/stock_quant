@@ -72,9 +72,11 @@ class ConfirmView(discord.ui.View):
         self.value = False
         self.stop()
 
-# 每日選股排行自動推播設定（台股 UTC+8，收盤 13:30；於收盤後推播）
-# 06:30 UTC = 14:30 台北時間，可調整。
-RANK_PUSH_TIME_UTC = time(hour=6, minute=30, tzinfo=timezone.utc)
+# 每日選股排行自動推播設定（台股 UTC+8，收盤 13:30）
+# 注意：TWSE 三大法人買賣超當日資料約 15:00~16:00 才陸續公布，
+# 14:30 推播會抓到前一日法人資料，故時間設在資料齊備後。
+# 09:30 UTC = 17:30 台北時間，可調整。
+RANK_PUSH_TIME_UTC = time(hour=9, minute=30, tzinfo=timezone.utc)
 RANK_PUSH_N = 8
 
 class QuantBot(commands.Bot):
