@@ -71,9 +71,10 @@ walk-forward、無 look-ahead，每 step 再平衡：
 
 | 排程 | 時間 | 動作 | 模組 |
 |---|---|---|---|
-| 每日選股排行推播　🔄 | **17:30 台北 = 09:30 UTC（法人公布後；`RANK_PUSH_TIME_UTC`）** | `build_rank_text` → 推播 Top/Bottom 至**綁定頻道** | `daily_rank_task`（`discord_runner.py`）/ `quant.ranker.rank_universe` |
-| 預測回填閉環　🔄 | 每日 06:00 UTC | 回填到期預測實際結果、結算命中 → 通知 `!accuracy` | `daily_scan_task` / `backfill_matured` |
-| 每日掃描 | 每日 | 個股訊號掃描 | `daily_scan_task` |
+| 每日選股排行推播　🔄 | **17:30 台北 = 09:30 UTC（法人公布後；`RANK_PUSH_TIME_UTC`）** | `build_rank_text` → 推播 Top/Bottom 至**綁定頻道** | `daily_rank_task`（`discord_runner.py:98`）/ `quant.ranker.rank_universe` |
+| 預測回填閉環　🔄 | 每日 06:00 UTC | 回填到期預測實際結果、結算命中 → 通知 `!accuracy` | `daily_scan_task`（`discord_runner.py:118`）/ `backfill_matured` |
+
+> ⚠️ 目前 `tasks.loop` **只有上述兩個排程**。`daily_scan_task` 雖名為「scan」，實際只做 `backfill_matured`（P1 回填），**並無獨立的個股訊號掃描排程**；個股訊號僅在 Discord 問答（`!a`）時即時計算。藍圖原列的「每日掃描／個股訊號掃描」一列已移除，避免誤導。
 
 **Discord 指令（人工查詢）**
 - `!rank [n]`（別名 `!排行 !選股`）：當日橫截面排行
@@ -124,14 +125,17 @@ walk-forward、無 look-ahead，每 step 再平衡：
 2. 倉位實為 **quarter-Kelly（`main.py:192`，`full_kelly*0.25`，單檔上限 0.25）**，非藍圖原稱的 half-Kelly。
 3. `MIN_SAMPLES`(=10) 定義在 `utils/strategy_weights.py:11`；`utils/risk_budget.py` 負責回撤風控，Kelly 計算在 `main.py`。三者分屬不同檔，藍圖原本籠統歸於 risk_budget。
 4. 推播文字組裝 `build_rank_text()` 在 `discord_runner.py:1085`；`quant/ranker.py` 對外為 `rank_universe()`。
-5. 排行推播時間補上 UTC 對照：17:30 台北 = 09:30 UTC（`RANK_PUSH_TIME_UTC`）。
+5. 排行推播時間補上 UTC 對照：17:30 台北 = 09:30 UTC（`RANK_PUSH_TIME_UTC`，`discord_runner.py:79`）。
+6. **（本次第二輪校核新增）§4 排程表原列三列，實際 `tasks.loop` 僅兩個**：`daily_rank_task`（09:30 UTC）、`daily_scan_task`（06:00 UTC，只做 `backfill_matured`）。`daily_scan_task` 名為 scan 卻無個股訊號掃描行為，原「每日掃描」一列為誤植，已移除並加註說明。
 
 **查核通過（與碼相符，無需改動）**
 - T86 法人爬蟲 `crawlers/twse_institutional.py`（快取 `data/twse_chip/`）✅
-- 四因子 `mom/revyoy/inst/lowvol` + `dollar_vol` 濾網（`quant/factors.py`）✅
+- 四因子 `mom/revyoy/inst/lowvol` + `dollar_vol` 濾網（`quant/factors.py`）；`mom = close.shift(21)/close.shift(252)-1`、`inst` 為近 20 日法人淨買/近 20 日量、`lowvol` 為近 60 日報酬波動負值、面板需 ≥260 筆（`factors.py:21`）✅
 - 橫截面回測 rank-IC / IC t-stat / walk-forward（`quant/backtest_xs.py`）✅
+- `rank_universe()` 確實回傳 (as_of, top, bottom)（`quant/ranker.py:35` `head/tail`），與 §3.1「Top-N 做多 / Bottom-N 避開」相符 ✅
+- Kelly：`calculate_kelly_position`（`main.py:176`）`full_kelly*0.25` 且單檔上限 0.25；P4 優先用 P1 實測命中率，樣本不足退回回測勝率（`main.py:353-366`）✅
 - P1 閉環：`data/predictions.db`、`DEFAULT_HORIZON_DAYS=30`、`backfill_matured`、HOLD→`skipped`（`utils/prediction_log.py`）✅
-- 指令 `!rank/!accuracy/!a/!validate/!bind` 與 `daily_scan_task`(06:00 UTC) 皆在 `discord_runner.py` ✅
+- 指令 `!rank/!accuracy/!a/!validate/!bind` 與 `!health`（`discord_runner.py:1041`）、`daily_scan_task`(06:00 UTC) 皆在 `discord_runner.py` ✅
 
 **確認尚未實作（§5.2 標示「建議實作」屬實，列為待辦）**
 - 滾動命中率退化告警：目前僅有手動 `!health`（`discord_runner.py:1041`），無自動滾動視窗告警 → 列為 §6 第 1 優先（最高 CP）。
