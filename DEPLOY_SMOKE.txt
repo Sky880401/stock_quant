@@ -1,2 +1,0 @@
-deploy pipeline smoke test
-token: smoke-20260607-133729
