@@ -8,3 +8,7 @@ data/*.json
 
 # runtime logs (可重生，不納版控)
 logs/*.log
+
+# 籌碼/面板快取（可重生、體積大，不納版控）
+data/twse_chip/
+data/quant_cache/

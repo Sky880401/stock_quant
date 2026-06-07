@@ -173,22 +173,29 @@ def _finmind_institutional(stock_id, start, end):
         return None
 
 
-def _attach_institutional(df, stock_id, throttle=0.35):
+def _attach_institutional(df, stock_id, throttle=0.35, inst_start=None):
     """把三大法人併入 df：主來源 T86，缺漏日回退 FinMind 備援。回傳同一 df。
 
     新增欄：Foreign/Trust/Dealer（淨買股數）、inst_unreliable（bool 健全檢查標記）。
     來源策略：先逐日查 T86 全市場日報（本地快取、全股池共用）；只有當「T86 查無」的
     交易日存在時，才對該股打一次 FinMind 補那幾天 → TWSE 個股完全不觸發 FinMind。
+
+    inst_start：若指定（Timestamp/str），只對 >= inst_start 的交易日抓/併法人；更早的日子
+      法人留 0、且**不觸發任何 T86/FinMind 抓取**。用途：價格歷史可向前拉很長（FinMind 便宜、
+      供因子暖身），但法人只在 T86 快取窗內抓（慢/稀缺），避免回測暖身段把 T86 逐日打爆。
     """
     import time as _time
     clean = str(stock_id).split(".")[0]
     for col in ("Foreign", "Trust", "Dealer"):
         df[col] = 0.0
+    inst_start = pd.Timestamp(inst_start) if inst_start is not None else None
 
     # ---- pass 1：主來源 T86（逐日，沿用 crawler 的快取/抓取，不重寫抓取邏輯）----
     missing = []   # T86 查無該股的日期
     cache_mem = {}
     for ts in df.index:
+        if inst_start is not None and ts < inst_start:
+            continue   # 暖身段：法人留 0，不抓
         dkey = ts.strftime("%Y%m%d")
         day = cache_mem.get(dkey)
         if day is None:
@@ -264,16 +271,23 @@ def _sanity_check_institutional(df, stock_id):
 FRAMES_DIR = os.path.join(CACHE_DIR, "frames")
 
 
-def get_stock_frame(stock_id, use_cache=True, max_age_days=2):
+def get_stock_frame(stock_id, use_cache=True, max_age_days=2, start=None, inst_start=None):
     """組裝單檔面板（Close/Volume/Foreign/Trust/Dealer/inst_unreliable/rev_yoy）。失敗回 None。
 
     股價走 FinMind 長歷史；三大法人走「T86 主 + FinMind 備援」（見 _attach_institutional）。
     逐檔磁碟快取：抓過的存 data/quant_cache/frames/<sid>.pkl，回填可中斷續跑、
     重建免重打 FinMind（省配額）。
+
+    start     : 股價歷史起點（FinMind，便宜）；None=用 HISTORY_START。
+    inst_start: 法人(T86/FinMind)只抓 >= 此日的交易日（見 _attach_institutional）；
+                供回測「價格暖身長、法人窗短」用。非預設值時自動換獨立快取檔名，避免污染線上 frame。
     """
     import time as _time
     os.makedirs(FRAMES_DIR, exist_ok=True)
-    fpath = os.path.join(FRAMES_DIR, f"{stock_id}.pkl")
+    tag = ""
+    if start is not None or inst_start is not None:
+        tag = "_bt%s_%s" % (str(start or "")[:10], str(inst_start or "")[:10])
+    fpath = os.path.join(FRAMES_DIR, f"{stock_id}{tag}.pkl")
     if use_cache and os.path.exists(fpath):
         age_d = (datetime.now().timestamp() - os.path.getmtime(fpath)) / 86400
         if age_d < max_age_days:
@@ -281,10 +295,10 @@ def get_stock_frame(stock_id, use_cache=True, max_age_days=2):
                 return pickle.load(open(fpath, "rb"))
             except Exception:
                 pass
-    df = _price_finmind(stock_id)
+    df = _price_finmind(stock_id, start=start or HISTORY_START)
     if df is None or len(df) < 60:
         return None
-    df = _attach_institutional(df, stock_id)          # T86 主 + FinMind 備援 + 健全檢查
+    df = _attach_institutional(df, stock_id, inst_start=inst_start)  # T86 主 + FinMind 備援 + 健全檢查
     df = df[["Close", "Volume", "Foreign", "Trust", "Dealer", "inst_unreliable"]].copy()
     _time.sleep(0.3)                                  # 節流
     yoy = _month_revenue_yoy(stock_id)
@@ -304,12 +318,17 @@ def get_stock_frame(stock_id, use_cache=True, max_age_days=2):
     return df
 
 
-def build_panel(universe=None, use_cache=True, max_age_hours=12):
-    """組裝整個股票池的面板 dict[stock_id]->DataFrame，帶磁碟快取。"""
+def build_panel(universe=None, use_cache=True, max_age_hours=12,
+                start=None, inst_start=None, cache_path=None):
+    """組裝整個股票池的面板 dict[stock_id]->DataFrame，帶磁碟快取。
+
+    start/inst_start：見 get_stock_frame（回測用：價格暖身長、法人窗短）。
+    cache_path：自訂聚合快取檔（非預設窗時建議指定，避免覆蓋線上 panel.pkl）。
+    """
     from quant.universe import get_universe
     universe = universe or get_universe()
     os.makedirs(CACHE_DIR, exist_ok=True)
-    path = os.path.join(CACHE_DIR, "panel.pkl")
+    path = cache_path or os.path.join(CACHE_DIR, "panel.pkl")
     if use_cache and os.path.exists(path):
         age_h = (datetime.now().timestamp() - os.path.getmtime(path)) / 3600
         if age_h < max_age_hours:
@@ -321,7 +340,7 @@ def build_panel(universe=None, use_cache=True, max_age_hours=12):
     panel = {}
     for sid in universe:
         try:
-            fr = get_stock_frame(sid)
+            fr = get_stock_frame(sid, start=start, inst_start=inst_start)
             if fr is not None and len(fr) > 60:
                 panel[sid] = fr
         except Exception:
