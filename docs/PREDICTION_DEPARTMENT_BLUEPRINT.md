@@ -9,7 +9,7 @@
 
 | 資料 | 來源 / 模組 | 取得方式 | 更新頻率 |
 |---|---|---|---|
-| 日線價量（Close/Volume） | FinMind → `quant/data_hub.py`（`fetch_stock_data_smart`） | API，本地 pickle 快取於 `data/quant_cache/` | 每交易日收盤後一次；節流 `_MIN_INTERVAL=0.9s` |
+| 日線價量（Close/Volume） | FinMind → `quant/data_hub.py`（`get_stock_frame` / `build_panel`；個股問答另走 `main.py` 的 `fetch_stock_data_smart`） | API，本地 pickle 快取於 `data/quant_cache/` | 每交易日收盤後一次；節流 `_MIN_INTERVAL=0.9s`（`quant/data_hub.py:22`） |
 | 三大法人買賣超（外資/投信/自營） | **證交所官方 T86**：`crawlers/twse_institutional.py` | 每日一個請求拿全市場，快取 `data/twse_chip/<date>.json` | 每交易日；**法人資料公布後**（約 17:00 後） |
 | 月營收年增率（rev_yoy） | FinMind 月營收 → `data_hub` | 依**公布日落後對齊**（M 月營收生效日設 M+1/12，forward-fill） | 每月（10 日左右公布） |
 | 股票池 universe | `quant/universe.py`（跨產業流動性中大型股 ~90 檔） | 靜態清單，`get_universe()` 單一入口 | 手動維護；未來改「近 60 日成交值動態取前 N」 |
@@ -53,14 +53,14 @@ walk-forward、無 look-ahead，每 step 再平衡：
 
 ## 3. 預測門檻與倉位管理（Kelly）　📌
 
-### 3.1 排序門檻 — 已實作 `quant/ranker.py`
+### 3.1 排序門檻 — 已實作 `quant/ranker.py`（`rank_universe()`；Discord 推播文字組裝為 `discord_runner.py` 的 `build_rank_text()`）
 - 不預測單股絕對漲跌，輸出 **Top-N 做多候選 / Bottom-N 避開**。
 - 進場門檻：須通過 `dollar_vol` 流動性濾網 + 綜合分位於 Top 分組。
 
-### 3.2 倉位（誠實 Kelly）— `utils/risk_budget.py` + `discord_runner.py`
-- **倉位大小由實測命中率驅動，非由模型自信度**：P1 樣本達 `MIN_SAMPLES` 後，Kelly 自動改用**該策略歷史命中率**縮放（見 `!accuracy`）。
+### 3.2 倉位（誠實 Kelly）— Kelly 計算在 `main.py`、回撤風控在 `utils/risk_budget.py`、權重/門檻在 `utils/strategy_weights.py`
+- **倉位大小由實測命中率驅動，非由模型自信度**：P1 樣本達 `MIN_SAMPLES`（=10，定義於 `utils/strategy_weights.py:11`）後，改用**該策略歷史命中率**縮放（見 `!accuracy`）。
 - 命中率 ≤ 50% 的策略 → Kelly ≈ 0 / 建議停用（系統會標示）。
-- **分數 Kelly（half-Kelly 為宜）** + 單檔上限 + ATR/Bollinger 波動調整，避免重押。
+- **分數 Kelly（現況為 quarter-Kelly，`main.py:192` `full_kelly * 0.25` 且單檔上限 0.25）** + ATR/Bollinger 波動調整，避免重押。⚠️ 與原藍圖「half-Kelly 為宜」不符——程式碼實際採更保守的 1/4 Kelly；若要改 half-Kelly 需另開 PR 並重測。
 - 樣本不足期：保守固定小注，明示「樣本累積中」。
 
 ---
@@ -71,7 +71,7 @@ walk-forward、無 look-ahead，每 step 再平衡：
 
 | 排程 | 時間 | 動作 | 模組 |
 |---|---|---|---|
-| 每日選股排行推播　🔄 | **17:30 台北（法人公布後）** | `build_rank_text` → 推播 Top/Bottom 至**綁定頻道** | `daily_rank_task` / `quant.ranker` |
+| 每日選股排行推播　🔄 | **17:30 台北 = 09:30 UTC（法人公布後；`RANK_PUSH_TIME_UTC`）** | `build_rank_text` → 推播 Top/Bottom 至**綁定頻道** | `daily_rank_task`（`discord_runner.py`）/ `quant.ranker.rank_universe` |
 | 預測回填閉環　🔄 | 每日 06:00 UTC | 回填到期預測實際結果、結算命中 → 通知 `!accuracy` | `daily_scan_task` / `backfill_matured` |
 | 每日掃描 | 每日 | 個股訊號掃描 | `daily_scan_task` |
 
@@ -112,3 +112,28 @@ walk-forward、無 look-ahead，每 step 再平衡：
 5. **觀望**：序列/DL 模型 —— 只有在 GBDT ranker IC t-stat 穩定 > 2 後才投入。
 
 > 一句話總結：**先守住「誠實命中率 + 風控監控」，再用橫截面排序找微弱但真實的 alpha；單股方向預測不投入額外資源。**
+
+---
+
+## 附錄 A. 藍圖對碼校核紀錄（2026-06-07，分支 `docs/blueprint-accuracy-fixes`）
+
+> 對照現有程式碼逐項查核藍圖宣稱「已實作」之模組，修正不符之處。整體約 90% 與程式碼一致；以下為已修正的落差與待辦建議。
+
+**已修正的事實落差（本次直接改進正文）**
+1. `fetch_stock_data_smart` 實際定義在 `main.py:52`，非 `quant/data_hub.py`；data_hub 對外為 `get_stock_frame` / `build_panel`。
+2. 倉位實為 **quarter-Kelly（`main.py:192`，`full_kelly*0.25`，單檔上限 0.25）**，非藍圖原稱的 half-Kelly。
+3. `MIN_SAMPLES`(=10) 定義在 `utils/strategy_weights.py:11`；`utils/risk_budget.py` 負責回撤風控，Kelly 計算在 `main.py`。三者分屬不同檔，藍圖原本籠統歸於 risk_budget。
+4. 推播文字組裝 `build_rank_text()` 在 `discord_runner.py:1085`；`quant/ranker.py` 對外為 `rank_universe()`。
+5. 排行推播時間補上 UTC 對照：17:30 台北 = 09:30 UTC（`RANK_PUSH_TIME_UTC`）。
+
+**查核通過（與碼相符，無需改動）**
+- T86 法人爬蟲 `crawlers/twse_institutional.py`（快取 `data/twse_chip/`）✅
+- 四因子 `mom/revyoy/inst/lowvol` + `dollar_vol` 濾網（`quant/factors.py`）✅
+- 橫截面回測 rank-IC / IC t-stat / walk-forward（`quant/backtest_xs.py`）✅
+- P1 閉環：`data/predictions.db`、`DEFAULT_HORIZON_DAYS=30`、`backfill_matured`、HOLD→`skipped`（`utils/prediction_log.py`）✅
+- 指令 `!rank/!accuracy/!a/!validate/!bind` 與 `daily_scan_task`(06:00 UTC) 皆在 `discord_runner.py` ✅
+
+**確認尚未實作（§5.2 標示「建議實作」屬實，列為待辦）**
+- 滾動命中率退化告警：目前僅有手動 `!health`（`discord_runner.py:1041`），無自動滾動視窗告警 → 列為 §6 第 1 優先（最高 CP）。
+- 每月自動重跑 `backtest_xs` 推 IC 漂移報表：尚未排程。
+- universe 動態取近 60 日成交值前 N：目前仍為靜態清單。
