@@ -157,9 +157,9 @@ def mark(led, closes=None, fts=None, dates=None):
         d0 = pd.Timestamp(e["as_of_data"])
         i0 = int(dates.searchsorted(d0))
         if i0 + HORIZON > len(dates) - 1:
-            due = dates[min(i0 + HORIZON, len(dates) - 1)]
-            print("⏳ 第%d筆未到期(基準日%s)，滿20交易日約 %s 才結算"
-                  % (e["entry_no"], e["as_of_data"], str(due.date()))); continue
+            due_est = (d0 + pd.Timedelta(days=30)).date()
+            print("⏳ 第%d筆未到期(基準日%s)，約 %s(滿20交易日)後可結算"
+                  % (e["entry_no"], e["as_of_data"], due_est)); continue
         d1 = dates[i0 + HORIZON]
         port = _port_ret_net(e["holdings"], closes, d1)
         bench = _bench_ret(closes, d0, d1)
