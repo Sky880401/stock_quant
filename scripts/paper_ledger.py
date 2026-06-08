@@ -44,6 +44,8 @@ MIN_LIQ = 2e7
 MIN_NAMES = 15
 HORIZON = 20               # 持有 20 交易日(約1個月)
 RT = _round_trip_cost()    # 一買一賣成本率 ≈ 0.586%
+PRICE_START = "2023-01-01"   # 與回測同窗：價格暖身(mom 需~252日)
+INST_START = "2024-01-01"    # 法人(T86)窗起點
 PANEL_CACHE = os.path.join(ROOT, "data", "quant_cache", "panel_bt_2024.pkl")
 LEDGER = os.path.join(ROOT, "data", "paper", "paper_ledger.json")
 
@@ -61,9 +63,14 @@ def save_ledger(led):
     json.dump(led, open(LEDGER, "w"), ensure_ascii=False, indent=2, default=str)
 
 
-def _ctx():
-    """載入 panel，回 (closes, fts, dates)。"""
-    panel = build_panel(cache_path=PANEL_CACHE, use_cache=True, max_age_hours=99999)
+def _ctx(fresh=False):
+    """載入 panel，回 (closes, fts, dates)。fresh=True 強制重抓最新股價(月度結算/開倉用)。"""
+    if fresh:
+        panel = build_panel(cache_path=PANEL_CACHE, use_cache=False,
+                            start=PRICE_START, inst_start=INST_START)
+    else:
+        panel = build_panel(cache_path=PANEL_CACHE, use_cache=True, max_age_hours=99999,
+                            start=PRICE_START, inst_start=INST_START)
     fts = build_factor_timeseries(panel)
     closes = {s: f["close"] for s, f in fts.items()}
     return closes, fts, _master_dates(panel)
@@ -240,11 +247,12 @@ def main():
     ap.add_argument("--mark", action="store_true")
     ap.add_argument("--backfill", type=int, default=0)
     ap.add_argument("--tick", action="store_true")
+    ap.add_argument("--fresh", action="store_true", help="強制重抓最新股價(月度自動化用)")
     ap.add_argument("--show", action="store_true")
     a = ap.parse_args()
     led = load_ledger()
     if a.backfill or a.mark or a.open or a.tick:
-        closes, fts, dates = _ctx()
+        closes, fts, dates = _ctx(fresh=a.fresh)
         if a.backfill:
             led = backfill(led, a.backfill, closes, fts, dates)
         if a.mark or a.tick:
