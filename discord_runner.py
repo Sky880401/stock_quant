@@ -18,7 +18,10 @@ from main import analyze_single_target, generate_moltbot_prompt, get_stock_name_
 from ai_runner import generate_insight
 from utils.logger import log_info, log_error
 from utils.history_recorder import record_user_query
-from utils.quota_manager import check_quota_status, deduct_quota, admin_add_quota
+from utils.quota_manager import (
+    check_quota_status, deduct_quota, admin_add_quota,
+    DEFAULT_LIMIT, BETA_LIMIT, PREMIUM_LIMIT,
+)
 from utils.user_analytics import create_ranking_embed
 from utils.period_backtest import load_period_results, get_predefined_periods
 
@@ -38,13 +41,14 @@ def load_stock_map():
         print(f"❌ Failed to load stock map: {e}")
 
 class ConfirmView(discord.ui.View):
-    def __init__(self, ctx, ticker, stock_name, user_id, is_admin):
+    def __init__(self, ctx, ticker, stock_name, user_id, is_admin, tier='free'):
         super().__init__(timeout=60)
         self.ctx = ctx
         self.ticker = ticker
         self.stock_name = stock_name
         self.user_id = user_id
         self.is_admin = is_admin
+        self.tier = tier
         self.value = None
 
     @discord.ui.button(label="✅ 確認分析", style=discord.ButtonStyle.green)
@@ -52,8 +56,16 @@ class ConfirmView(discord.ui.View):
         if interaction.user != self.ctx.author:
             await interaction.response.send_message("這不是你的按鈕！", ephemeral=True)
             return
-        
+
         if not self.is_admin:
+            # 按下確認時重新檢查額度，避免同時開多個確認視窗繞過限制
+            allowed, _, limit = check_quota_status(self.user_id, self.tier)
+            if not allowed:
+                await interaction.response.send_message(
+                    f"⛔ 今日額度已用完 ({limit} 次/天)，本次不執行分析。", ephemeral=True)
+                self.value = False
+                self.stop()
+                return
             deduct_quota(self.user_id)
         
         await interaction.response.send_message(f"🚀 BMO 啟動！正在為 **{self.stock_name}** 進行深度運算...", ephemeral=False)
@@ -133,7 +145,7 @@ async def analyze_stock(ctx, ticker: str = None):
         await ctx.send(f"❌ 代號解析錯誤: {e}")
         return
     
-    view = ConfirmView(ctx, clean_ticker, stock_name, user_id, is_admin)
+    view = ConfirmView(ctx, clean_ticker, stock_name, user_id, is_admin, tier)
     msg = await ctx.send(f"🧐 您是想查詢 **{stock_name} ({clean_ticker})** 嗎？\n(今日剩餘: {remaining} 次)", view=view)
     await view.wait()
     await msg.edit(view=None)
@@ -146,7 +158,7 @@ async def analyze_stock(ctx, ticker: str = None):
                 return
 
             dec = data['final_decision']
-            roi = data['backtest_insight']['historical_roi'] if data['backtest_insight'] else "N/A"
+            roi = (data.get('backtest_insight') or {}).get('historical_roi', "N/A")
             record_user_query(ctx.author.name, data['meta']['ticker'], data['meta']['name'], dec['action'], dec['final_confidence'], roi)
 
             prompt = generate_moltbot_prompt(data, is_single=True)
@@ -173,7 +185,15 @@ async def analyze_stock(ctx, ticker: str = None):
 @bot.command(name="gift")
 @commands.has_permissions(administrator=True)
 async def gift_quota(ctx, member: discord.Member, amount: int):
-    new_limit = admin_add_quota(member.id, amount)
+    # 以受贈者的身分組額度為基準加碼，避免送額度給 VIP 反而把上限降回預設值
+    member_roles = [role.name for role in member.roles]
+    if any(r in ['Premium', 'VIP'] for r in member_roles):
+        base_limit = PREMIUM_LIMIT
+    elif 'BETA' in member_roles:
+        base_limit = BETA_LIMIT
+    else:
+        base_limit = DEFAULT_LIMIT
+    new_limit = admin_add_quota(member.id, amount, base_limit)
     await ctx.send(f"🎁 已為 **{member.display_name}** 增加 {amount} 次額度！\n現在總額度: **{new_limit} 次/天**")
 
 @bot.command(name="hotlist", aliases=["hotrank", "rank"])

@@ -274,7 +274,7 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
         "action": action,
         "position_size": pos_str,
         "time_horizon": "Mid-Term",
-        "final_confidence": round((100-risk_score)/100, 2) if 'risk_score' in locals() else score,
+        "final_confidence": round(max(0.0, min(score, 1.0)), 2),
         "risk_factors": " | ".join(risk_flags) if risk_flags else "Low",
         "chip_insight": chip_res['reason'],
         "tech_insight": f"RSI={rsi_val:.1f}, KD={kd_res['signal']}, MACD={macd_status}",
@@ -341,8 +341,10 @@ def generate_moltbot_prompt(data, is_single=False):
         ticker = data['meta']['ticker']
         name = data['meta'].get('name', ticker)
         dec = data['final_decision']
-        strat = data['backtest_insight'].get('strategy_type', 'Trend')
-        win_rate = data['backtest_insight'].get('win_rate_display', 'N/A')
+        # backtest_insight 可能為 None (優化失敗或無設定檔)，避免 AttributeError
+        backtest_insight = data.get('backtest_insight') or {}
+        strat = backtest_insight.get('strategy_type', 'Trend')
+        win_rate = backtest_insight.get('win_rate_display', 'N/A')
         
         logic_desc = "順勢操作"
         if strat == "Reversion (RSI)": logic_desc = "逆勢乖離操作"
@@ -364,7 +366,9 @@ def generate_moltbot_prompt(data, is_single=False):
 """
     else:
         context = json.dumps(data.get("analysis", {}), indent=2, ensure_ascii=False)
-        header = "【BMO 機構級量化決策報告】"
+        # 批次模式無單一標的，補上預設值避免下方共用模板 NameError
+        ticker = data.get('meta', {}).get('ticker', 'PORTFOLIO')
+        name = data.get('meta', {}).get('name', '投資組合')
         guidance = ""
 
     prompt = f"""
@@ -377,8 +381,8 @@ def generate_moltbot_prompt(data, is_single=False):
 請撰寫報告，結構如下：
 1. **📊 綜合評級**: 
    - 請列點顯示 Action、倉位、**策略模型** (這是使用者最關心的，請務必列出)、關鍵價位。
-2. **🧠 決策邏輯**: 
-   - 解釋為何選擇 {data['backtest_insight'].get('strategy_type')}。
+2. **🧠 決策邏輯**:
+   - 解釋為何選擇 {(data.get('backtest_insight') or {}).get('strategy_type', 'Trend')}。
    - 分析目前技術面多空。
 3. **⛔ 風險管理**: 
    - 說明波動率風險與價位防守邏輯。

@@ -7,6 +7,7 @@ Line Bot Flask 應用程序
 - 生產: gunicorn line_webhook:app
 """
 
+import hmac
 import os
 import sys
 from pathlib import Path
@@ -25,8 +26,16 @@ app = Flask(__name__)
 
 # 配置
 LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET')
+ADMIN_API_KEY = os.getenv('ADMIN_API_KEY')
 webhook_handler = get_webhook_handler()
 feedback_manager = get_feedback_manager()
+
+
+def require_admin():
+    """管理員端點認證: 需要 X-Admin-Key header 與 ADMIN_API_KEY 環境變數相符"""
+    provided = request.headers.get('X-Admin-Key', '')
+    if not ADMIN_API_KEY or not hmac.compare_digest(provided, ADMIN_API_KEY):
+        abort(404)
 
 
 @app.route('/webhook', methods=['POST'])
@@ -62,20 +71,21 @@ def feedback_stats():
     """
     獲取反饋統計信息 (管理員端點)
     
-    查詢: /feedback/stats
+    查詢: /feedback/stats (需 X-Admin-Key header)
     """
+    require_admin()
     try:
         stats = {
             "total": len(feedback_manager.feedback_list),
             "by_type": {
-                "bug": len([f for f in feedback_manager.feedback_list if f["type"] == "bug"]),
-                "improvement": len([f for f in feedback_manager.feedback_list if f["type"] == "improvement"]),
-                "question": len([f for f in feedback_manager.feedback_list if f["type"] == "question"])
+                "bug": len([f for f in feedback_manager.feedback_list if f.get("type") == "bug"]),
+                "improvement": len([f for f in feedback_manager.feedback_list if f.get("type") == "improvement"]),
+                "question": len([f for f in feedback_manager.feedback_list if f.get("type") == "question"])
             },
             "by_status": {
-                "new": len([f for f in feedback_manager.feedback_list if f["status"] == "new"]),
-                "processing": len([f for f in feedback_manager.feedback_list if f["status"] == "processing"]),
-                "resolved": len([f for f in feedback_manager.feedback_list if f["status"] == "resolved"])
+                "new": len([f for f in feedback_manager.feedback_list if f.get("status") == "new"]),
+                "processing": len([f for f in feedback_manager.feedback_list if f.get("status") == "processing"]),
+                "resolved": len([f for f in feedback_manager.feedback_list if f.get("status") == "resolved"])
             }
         }
         return stats, 200
@@ -88,10 +98,11 @@ def feedback_list():
     """
     列出最近的反饋 (管理員端點)
     
-    查詢: /feedback/list?limit=10
+    查詢: /feedback/list?limit=10 (需 X-Admin-Key header)
     """
+    require_admin()
     try:
-        limit = request.args.get('limit', 20, type=int)
+        limit = max(1, min(request.args.get('limit', 20, type=int), 100))
         recent = feedback_manager.feedback_list[-limit:][::-1]  # 反轉以獲得最新的
         return {"feedback": recent}, 200
     except Exception as e:
@@ -104,4 +115,7 @@ if __name__ == '__main__':
     print(f"健康檢查: http://localhost:5000/health")
     print(f"統計信息: http://localhost:5000/feedback/stats")
     
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # debug 模式會開啟 Werkzeug 互動式除錯器 (可遠端執行程式碼)，僅允許透過環境變數在本機開發時開啟
+    # 生產環境請用 gunicorn (見 Dockerfile / Procfile)，開發伺服器只綁定本機
+    debug_mode = os.getenv('DEBUG', 'false').lower() == 'true'
+    app.run(host='127.0.0.1', port=5000, debug=debug_mode)

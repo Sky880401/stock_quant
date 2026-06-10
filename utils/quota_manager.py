@@ -73,21 +73,22 @@ def deduct_quota(user_id):
     save_quota(data)
     return used + 1
 
-def admin_add_quota(user_id, amount):
+def admin_add_quota(user_id, amount, base_limit=DEFAULT_LIMIT):
     """
     管理員增加用戶額度
     邏輯：增加用戶的上限額度（不是減少已用次數）
+    base_limit: 用戶身分組的基礎上限 (free/beta/premium)，避免送額度給高階會員時反而降低其上限
     返回: 用戶新的總額度上限
     """
     data = load_quota()
     user_str = str(user_id)
-    
+
     # 初始化limits字典
     if "limits" not in data:
         data["limits"] = {}
-    
-    # 獲取用戶當前的基礎上限（如果有自訂額度則使用，否則使用默認值）
-    current_limit = data["limits"].get(user_str, DEFAULT_LIMIT)
+
+    # 獲取用戶當前的基礎上限（如果有自訂額度則使用，否則使用其身分組基礎值）
+    current_limit = data["limits"].get(user_str, base_limit)
     
     # 增加額度
     new_limit = current_limit + amount

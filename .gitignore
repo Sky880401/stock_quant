@@ -5,3 +5,11 @@ venv/
 .vscode/
 data/*.json
 .env
+
+# 執行期產物與個資，不入版控
+logs/
+data/*.csv
+data/*.db
+data/training_results/
+reports/
+*.deb

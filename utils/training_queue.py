@@ -95,19 +95,19 @@ class TrainingQueue:
         sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
         try:
             from main import fetch_stock_data_smart
-            from datetime import datetime
-            
-            # 獲取指定時間段的數據
-            df = fetch_stock_data_smart(ticker)
-            
+
+            # 獲取指定時間段的數據 (fetch_stock_data_smart 回傳 dict，K線在 "df" 欄位，索引為日期)
+            data_result = fetch_stock_data_smart(ticker)
+            df = data_result.get("df") if data_result.get("status") == "success" else None
+
             if df is not None and not df.empty:
-                # 轉換日期格式以進行篩選
-                df['date'] = pd.to_datetime(df['date'])
+                if not isinstance(df.index, pd.DatetimeIndex):
+                    df.index = pd.to_datetime(df.index)
                 start = pd.to_datetime(start_date)
                 end = pd.to_datetime(end_date)
-                
+
                 # 篩選日期範圍內的數據
-                filtered_df = df[(df['date'] >= start) & (df['date'] <= end)]
+                filtered_df = df[(df.index >= start) & (df.index <= end)]
                 k_line_count = len(filtered_df)
                 
                 # 檢查K線數量
@@ -254,13 +254,14 @@ class TrainingQueue:
                     strategy_class, df_period, **params
                 )
                 
-                # 计算综合评分 (权重可调)
-                score = roi * 0.4 + sharpe * 100 * 0.4 + win_rate * 100 * 0.2
+                # 计算综合评分 (权重可调; win_rate 已是百分比)
+                score = roi * 0.4 + sharpe * 100 * 0.4 + win_rate * 0.2
                 
+                # run_backtest 回傳的 win_rate 已是百分比 (0-100)，不可再乘 100
                 result_entry = {
                     "params": params,
                     "roi": round(roi, 2),
-                    "win_rate": round(win_rate * 100, 2),
+                    "win_rate": round(win_rate, 2),
                     "sharpe": round(sharpe, 2),
                     "total_trades": total_trades,
                     "max_dd": round(max_dd * 100, 2),
@@ -273,7 +274,7 @@ class TrainingQueue:
                     best_result = {
                         "best_params": params,
                         "best_roi": round(roi, 2),
-                        "best_win_rate": round(win_rate * 100, 2),
+                        "best_win_rate": round(win_rate, 2),
                         "best_sharpe": round(sharpe, 2),
                         "best_max_dd": round(max_dd * 100, 2),
                         "best_total_trades": total_trades,

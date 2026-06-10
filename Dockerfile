@@ -10,4 +10,5 @@ COPY . .
 
 EXPOSE 5000
 
-CMD ["python", "line_webhook.py"]
+# 生產環境使用 gunicorn，不可用 Flask 開發伺服器 (debug 模式有 RCE 風險)
+CMD ["gunicorn", "line_webhook:app", "--bind", "0.0.0.0:5000", "--workers", "1", "--timeout", "120"]
