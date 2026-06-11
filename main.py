@@ -517,6 +517,26 @@ def analyze_single_target(stock_id: str, run_optimization_if_missing: bool = Fal
     except Exception as e:
         log_info(f"P3 獲利空間計算略過: {e}")
 
+    # 風險報酬閘門:技術面 Action 與機率化獲利空間打架時降級,並留下說明欄位
+    try:
+        ps = profit_space or {}
+        if (not ps.get("insufficient")) and ps.get("samples") and "BUY" in str(decision.get("action", "")):
+            prob_up = ps.get("prob_up")
+            exp_ret = ps.get("expected_return")
+            downside = abs(ps.get("downside") or 0)
+            bad_odds = ((prob_up is not None and prob_up < 50)
+                        or (exp_ret is not None and exp_ret <= 0)
+                        or (downside > 0 and exp_ret is not None and exp_ret < 0.4 * downside))
+            if bad_odds:
+                decision["risk_reward_downgrade"] = (
+                    f"技術面原始訊號為 {decision['action']},但機率化獲利空間不支持:"
+                    f"20日上漲機率 {prob_up}%、期望報酬 {exp_ret}% 對下檔 {ps.get('downside')}%"
+                    f",風險報酬比不足,故降級為 HOLD。")
+                decision["action"] = "HOLD (Neutral)"
+                decision["position_size"] = "0-2% (風險報酬不佳,降級)"
+    except Exception:
+        pass
+
     chart_params = backtest_info.get("params", {}) if backtest_info else {}
     chart_path = generate_stock_chart(stock_name, df, strategy_params=chart_params)
     return {
@@ -619,6 +639,16 @@ def generate_moltbot_prompt(data, is_single=False):
         header = "【BMO 機構級量化決策報告】"
         guidance = ""
 
+    _alert = (data.get("inst_avoid_alert") or {}) if isinstance(data, dict) else {}
+    if _alert.get("level") in ("heavy", "extreme"):
+        alert_section = """5. **🛑 法人避雷警示**:
+   - 看 [Input Data] 的 inst_avoid_alert:**必須**在報告最上方加一個醒目警示區塊,引用其 meaning 與 inst_20d_ratio 數字,並明說「此為統計性避雷提示、非預測」。
+6. """
+        alert_ban = ""
+    else:
+        alert_section = "5. "
+        alert_ban = "\n⚠️ 本檔 inst_avoid_alert 未觸發(none/no_data):整份報告禁止出現「法人避雷」「避雷警示」等字樣或任何相關段落,連「不需要警示」也不准寫。\n"
+
     prompt = f"""
 【BMO 專業投資評鑑: {name} ({ticker})】
 時間: {timestamp}
@@ -626,7 +656,7 @@ def generate_moltbot_prompt(data, is_single=False):
 ⚠️ 鐵則：**只能引用 [Input Data] 裡實際出現的數字**（現價、停損價、勝率、籌碼、報酬等）。
 嚴禁自行編造或臆測任何價位/數據。若某欄位是 nan、缺失或 N/A，就明白寫「數據缺失，不評估」，不要用記憶中的歷史價格填補。
 
---- 分析指引 ---
+{alert_ban}--- 分析指引 ---
 {guidance}
 
 請撰寫報告，結構如下：
@@ -635,15 +665,13 @@ def generate_moltbot_prompt(data, is_single=False):
 2. **🧠 決策邏輯**: 
    - 解釋為何選擇 {(data.get('backtest_insight') or {}).get('strategy_type', 'Trend')}。
    - 分析目前技術面多空。
+   - 若 final_decision 含 risk_reward_downgrade 欄位,**必須**完整引用該欄位內容,解釋為何降級。
 3. **💰 獲利空間 (機率化)**:
    - 根據 profit_space 欄位說明：持有約 N 交易日的上漲機率、期望報酬、目標價區間(target_low~target_high)、下檔風險。
    - 這是基於該股歷史報酬分佈的統計值，請如實引用數字，不要誇大。若 insufficient 為真就說樣本不足。
 4. **🔍 籌碼與消息面**:
    - 根據 sentiment 欄位解讀三大法人籌碼(Chip)、融資融券(margin)、新聞情緒(news)，三者是否與技術面同向或背離。
-5. **🛑 法人避雷警示**:
-   - 看 [Input Data] 的 inst_avoid_alert：level 是 heavy 或 extreme 時，**必須**在報告最上方加一個醒目警示區塊，引用其 meaning 與 inst_20d_ratio 數字，並明說「此為統計性避雷提示、非預測」。
-   - level 是 none 或 no_data 時，整份報告**完全不要提**避雷警示。
-6. **⛔ 風險管理**:
+{alert_section}**⛔ 風險管理**:
    - 說明波動率風險與價位防守邏輯。
 
 [Input Data]
