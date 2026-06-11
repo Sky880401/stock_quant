@@ -382,7 +382,7 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
         pos_str = "0-2% (訊號不足，觀望)"
     else:
         low = max(0, int(round(final_pos * 0.6)))
-        pos_str = f"{low}-{final_pos}%"
+        pos_str = f"{final_pos}%" if low >= final_pos else f"{low}-{final_pos}%"
 
     atr_multiplier = 2.0 if atr_pct > 3.0 else 1.5 
     atr_stop = current_price - (atr * atr_multiplier)
@@ -537,6 +537,25 @@ def analyze_single_target(stock_id: str, run_optimization_if_missing: bool = Fal
     except Exception:
         pass
 
+    # 反向檢核:減碼/出場訊號但統計分佈強烈偏多 → 註記分歧(不翻轉訊號,風控優先;
+    # 錯誤的BUY賠真錢、錯誤的REDUCE只少賺,維持不對稱處理)
+    try:
+        ps = profit_space or {}
+        act = str(decision.get("action", ""))
+        if (not ps.get("insufficient")) and ps.get("samples") and \
+           ("REDUCE" in act or "SELL" in act or "EXIT" in act):
+            prob_up = ps.get("prob_up")
+            exp_ret = ps.get("expected_return")
+            downside = abs(ps.get("downside") or 0)
+            if prob_up is not None and exp_ret is not None \
+               and prob_up >= 60 and exp_ret >= 0.4 * downside:
+                decision["stat_conflict_note"] = (
+                    f"訊號分歧:技術/籌碼面給出 {act},但該股歷史20日報酬分佈偏多"
+                    f"(上漲機率 {prob_up}%、期望報酬 {exp_ret}%)。本系統以風險控制優先、"
+                    f"維持原建議,但此背離須如實揭露,請自行權衡。")
+    except Exception:
+        pass
+
     chart_params = backtest_info.get("params", {}) if backtest_info else {}
     chart_path = generate_stock_chart(stock_name, df, strategy_params=chart_params)
     return {
@@ -666,6 +685,7 @@ def generate_moltbot_prompt(data, is_single=False):
    - 解釋為何選擇 {(data.get('backtest_insight') or {}).get('strategy_type', 'Trend')}。
    - 分析目前技術面多空。
    - 若 final_decision 含 risk_reward_downgrade 欄位,**必須**完整引用該欄位內容,解釋為何降級。
+   - 若 final_decision 含 stat_conflict_note 欄位,**必須**在決策邏輯中如實呈現該分歧說明,不得淡化。
 3. **💰 獲利空間 (機率化)**:
    - 根據 profit_space 欄位說明：持有約 N 交易日的上漲機率、期望報酬、目標價區間(target_low~target_high)、下檔風險。
    - 這是基於該股歷史報酬分佈的統計值，請如實引用數字，不要誇大。若 insufficient 為真就說樣本不足。
