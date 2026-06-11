@@ -556,6 +556,46 @@ def analyze_single_target(stock_id: str, run_optimization_if_missing: bool = Fal
     except Exception:
         pass
 
+    # 倉位強化:1) 避雷 heavy/extreme 壓低倉位上限 2) BUY 優勢偏薄時上限減半
+    # (風控性壓低、不翻轉訊號;錯過不買只少賺,符合系統不對稱原則)
+    try:
+        _avoid = inst_avoid_alert(df) or {}
+    except Exception:
+        _avoid = {}
+    try:
+        import re as _re
+        ps = profit_space or {}
+        act = str(decision.get("action", ""))
+        pos = str(decision.get("position_size", ""))
+        m = _re.match(r"(?:(\d+)-)?(\d+)%", pos)
+        if m and ("BUY" in act or "HOLD" in act):
+            low = int(m.group(1)) if m.group(1) else int(m.group(2))
+            high = int(m.group(2))
+            cap = None
+            why = []
+            lv = _avoid.get("level")
+            if lv == "extreme":
+                cap = 1
+                why.append(f"法人避雷 extreme(20日法人賣壓比 {_avoid.get('inst_20d_ratio')})")
+            elif lv == "heavy":
+                cap = 2
+                why.append(f"法人避雷 heavy(20日法人賣壓比 {_avoid.get('inst_20d_ratio')})")
+            if "BUY" in act and (not ps.get("insufficient")) and ps.get("samples"):
+                exp_ret = ps.get("expected_return")
+                downside = abs(ps.get("downside") or 0)
+                if exp_ret is not None and downside > 0 and 0.4 * downside <= exp_ret < 0.7 * downside:
+                    thin_cap = max(1, high // 2)
+                    cap = thin_cap if cap is None else min(cap, thin_cap)
+                    why.append(f"優勢偏薄(期望報酬 {exp_ret}% 不足下檔 {ps.get('downside')}% 的0.7倍)")
+            if cap is not None and high > cap:
+                new_low = min(low, cap)
+                decision["position_size"] = (f"{cap}%" if new_low >= cap else f"{new_low}-{cap}%") + " (上限壓低)"
+                decision["position_cap_note"] = (
+                    f"倉位上限由 {pos} 壓至 {cap}%:" + ";".join(why)
+                    + "。此為風控性壓低、非預測,訊號本身不變。")
+    except Exception:
+        pass
+
     chart_params = backtest_info.get("params", {}) if backtest_info else {}
     chart_path = generate_stock_chart(stock_name, df, strategy_params=chart_params)
     return {
@@ -563,7 +603,7 @@ def analyze_single_target(stock_id: str, run_optimization_if_missing: bool = Fal
         "price_data": {"latest_close": float(df['Close'].iloc[-1]), "volume": int(df['Volume'].iloc[-1])},
         "strategies": {"Technical": tech_res, "Fundamental": fund_res, "Chip": chip_res, "Institutional": inst_res},
         "sentiment": {"news": news_res, "margin": margin_res},
-        "inst_avoid_alert": inst_avoid_alert(df),
+        "inst_avoid_alert": _avoid,
         "profit_space": profit_space,
         "backtest_insight": backtest_info,
         "final_decision": decision,
@@ -686,6 +726,7 @@ def generate_moltbot_prompt(data, is_single=False):
    - 分析目前技術面多空。
    - 若 final_decision 含 risk_reward_downgrade 欄位,**必須**完整引用該欄位內容,解釋為何降級。
    - 若 final_decision 含 stat_conflict_note 欄位,**必須**在決策邏輯中如實呈現該分歧說明,不得淡化。
+   - 若 final_decision 含 position_cap_note 欄位,**必須**在風險管理段引用該說明,解釋倉位為何被壓低。
 3. **💰 獲利空間 (機率化)**:
    - 根據 profit_space 欄位說明：持有約 N 交易日的上漲機率、期望報酬、目標價區間(target_low~target_high)、下檔風險。
    - 這是基於該股歷史報酬分佈的統計值，請如實引用數字，不要誇大。若 insufficient 為真就說樣本不足。
