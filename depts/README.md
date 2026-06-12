@@ -11,8 +11,8 @@
 | 數據搜集課 | `depts/data_dept` | 股價/基本面/法人買賣超抓取與清洗 | `data/data_loader.py`、`crawlers/`（twse_institutional、market_data、news_scraper） |
 | 指標演算法課 | `depts/indicator_dept` | 技術指標計算與綜合計分決策 | `strategies/indicators/`、`strategies/price_action/`、`strategies/ml_models/` |
 | 回測演算法課 | `depts/backtest_dept` | Kelly 倉位、歷史補考、參數最佳化 | `optimizer_runner.py`、`backtest_runner.py`、`utils/period_backtest.py`、`utils/walk_forward.py`、`utils/strategy_weights.py`、`utils/prediction_log.py` |
-| 風控課 | `depts/risk_dept` | 法人避雷警示、風報比閘門、分歧揭露、倉位壓低 | `utils/profit_space.py`、`utils/risk_budget.py`、`scripts/logic_test_n.py`（稽核員：R1–R10b 一致性稽核） |
-| 量化研究課 | `depts/quant_dept` | 橫截面因子研究、打假驗證、紙上帳本（research 線，不在 !a 即時流水線上） | `quant/`（factors、backtest_xs、ranker、universe、data_hub）、`scripts/` 研究腳本（run_xs_backtest、holdout_revyoy、audit_revyoy_pit、beta_adjust_revyoy、paper_ledger；部分在 feat/paper-ledger-settlement 分支）、`test_quant_backtest_xs.py` |
+| 風控課 | `depts/risk_dept` | 法人避雷警示、風報比閘門、分歧揭露、倉位壓低、稽核與帳本監督（中台） | `utils/profit_space.py`、`utils/risk_budget.py`、`scripts/logic_test_n.py`（稽核員：R1–R10b 一致性稽核）、`scripts/paper_ledger.py`（帳本記帳/結算權，檔案在 feat/paper-ledger-settlement 分支） |
+| 量化研究課 | `depts/quant_dept` | 橫截面因子研究與策略提案（research 線，不在 !a 即時流水線上）；打假驗證與帳本記帳由風控課（中台）監督——研究不能自己當裁判 | `quant/`（factors、backtest_xs、ranker、universe、data_hub）、`scripts/` 研究腳本（run_xs_backtest、holdout_revyoy、audit_revyoy_pit、beta_adjust_revyoy、paper_ledger；部分在 feat/paper-ledger-settlement 分支）、`test_quant_backtest_xs.py` |
 | 報告產出課 | `depts/report_dept` | LLM prompt 組裝與誠實鐵則 | `ai_runner.py`（NVIDIA LLM 呼叫） |
 | 推送課 | `depts/delivery_dept` | Discord / LINE 介面 | `discord_runner.py`、`line_bot.py`（系統服務進入點，路徑不可動） |
 
@@ -23,6 +23,8 @@ systemd 進入點或大量 import）。之後若要搬，逐課搬並跑回歸�
 
 - **前台（賺錢）**：指標演算法課＋回測演算法課（Alpha Research / 交易訊號）、量化研究課（Quant Research）。
 - **中台（管風險，獨立性原則：不對前台讓步）**：風控課——只降級/壓倉/揭露，不翻轉訊號。
+  另持有「模型驗證權」（logic_test_n 稽核）與「帳本記帳權」（paper_ledger）：前台研究出策略、
+  中台負責驗證與記帳，研究不能自己當裁判（2026-06-12 顧問討論採納）。
 - **後台（支援）**：數據搜集課、報告產出課、推送課。
 
 ## 流水線（main.analyze_single_target）
