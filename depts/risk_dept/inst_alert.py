@@ -18,6 +18,10 @@ def inst_avoid_alert(df):
             return {"level": "no_data"}
         trust = df["Trust"].fillna(0) if "Trust" in df.columns else 0
         inst_net = df["Foreign"].fillna(0) + trust
+        # 第4輪隨機驗證缺口B:法人欄全零=根本抓不到資料(T86只涵蓋上市,上櫃股會全零)
+        # → 誠實回 no_data,不可偽裝成「中立(none)」
+        if float(inst_net.abs().sum()) == 0.0:
+            return {"level": "no_data"}
         ratio = inst_net.rolling(20).sum() / df["Volume"].rolling(20).sum().replace(0, float("nan"))
         v = ratio.dropna()
         if not len(v):

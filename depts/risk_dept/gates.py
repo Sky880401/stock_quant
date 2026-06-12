@@ -47,6 +47,7 @@ def apply_stat_conflict_note(decision, profit_space):
 
 def apply_position_caps(decision, profit_space, avoid):
     """倉位強化:1) 避雷 heavy/extreme 壓低倉位上限 2) BUY 優勢偏薄時上限減半
+    3) HOLD 但統計分佈明顯看壞(期望報酬<0且上漲機率<40%)時上限壓至1%
     (風控性壓低、不翻轉訊號;錯過不買只少賺,符合系統不對稱原則)"""
     _avoid = avoid or {}
     try:
@@ -74,6 +75,14 @@ def apply_position_caps(decision, profit_space, avoid):
                     thin_cap = max(1, high // 2)
                     cap = thin_cap if cap is None else min(cap, thin_cap)
                     why.append(f"優勢偏薄(期望報酬 {exp_ret}% 不足下檔 {ps.get('downside')}% 的0.7倍)")
+            # 第4輪隨機驗證缺口A:HOLD 配多%倉位但統計分佈明顯看壞(如27.6%勝率配3-5%)
+            # → 壓到1%並留書面理由;只管「建議持有多少」、不把 HOLD 翻成 REDUCE
+            if "HOLD" in act and (not ps.get("insufficient")) and ps.get("samples"):
+                exp_ret = ps.get("expected_return")
+                prob_up = ps.get("prob_up")
+                if exp_ret is not None and prob_up is not None and exp_ret < 0 and prob_up < 40:
+                    cap = 1 if cap is None else min(cap, 1)
+                    why.append(f"統計分佈看壞(20日上漲機率 {prob_up}%、期望報酬 {exp_ret}%)")
             if cap is not None and high > cap:
                 new_low = min(low, cap)
                 decision["position_size"] = (f"{cap}%" if new_low >= cap else f"{new_low}-{cap}%") + " (上限壓低)"
