@@ -239,6 +239,28 @@ def show(led):
     open_n = [e for e in es if e["status"] == "open"]
     if open_n:
         print("⏳ 開倉中未結算：%d 筆（到期後 --mark 結算）" % len(open_n))
+    # 北極星對照（中台監督）：AI 月成本 vs 紙上策略覆蓋能力。
+    # 只採「前進」筆（回填筆含存活偏誤不採計）；成本由 .env AI_COST_MONTHLY_TWD 設定，
+    # 未設定/無樣本就誠實寫缺失，不編數字。
+    ai_cost = os.environ.get("AI_COST_MONTHLY_TWD")
+    fwd_closed = [e for e in es if e["status"] == "closed" and e.get("kind") != "backfill_biased"]
+    print()
+    if not ai_cost:
+        print("💰 北極星對照：未設定 AI_COST_MONTHLY_TWD（.env），略過成本對照。")
+    elif not fwd_closed:
+        print("💰 北極星對照：AI 月成本 NT$%s ｜尚無已結算的前進紀錄，等首筆前進結算後開始對照（回填筆含偏誤不採計）。"
+              % format(int(float(ai_cost)), ","))
+    else:
+        mx = float(np.mean([e["excess_pct"] for e in fwd_closed]))
+        cost = float(ai_cost)
+        if mx > 0:
+            need = cost / (mx / 100.0)
+            print("💰 北極星對照：AI 月成本 NT$%s ｜前進平均超額 %+.2f%%/月 → 需投入本金約 NT$%s 才覆蓋成本"
+                  "（樣本僅 %d 筆前進，波動大、僅供方向參考）"
+                  % (format(int(cost), ","), mx, format(int(round(need, -3)), ","), len(fwd_closed)))
+        else:
+            print("💰 北極星對照：AI 月成本 NT$%s ｜前進平均超額 %+.2f%%/月 ≤ 0，目前紙上策略無法覆蓋成本"
+                  "（誠實紀錄，%d 筆前進樣本）" % (format(int(cost), ","), mx, len(fwd_closed)))
 
 
 def main():
