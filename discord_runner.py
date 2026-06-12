@@ -61,6 +61,14 @@ class ConfirmView(discord.ui.View):
     @discord.ui.button(label="✅ 確認分析", style=discord.ButtonStyle.green)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_admin:
+            # 按下確認時重新檢查額度，避免同時開多個確認視窗繞過限制（audit 修正）
+            allowed, _, limit = check_quota_status(self.user_id, self.tier)
+            if not allowed:
+                await interaction.response.send_message(
+                    f"⛔ 今日額度已用完 ({limit} 次/天)，本次不執行分析。", ephemeral=True)
+                self.value = False
+                self.stop()
+                return
             deduct_quota(self.user_id, self.tier)
         await interaction.response.send_message(f"🚀 BMO 啟動！正在為 **{self.stock_name}** 進行深度運算...", ephemeral=False)
         self.value = True
@@ -213,7 +221,7 @@ async def analyze_stock(ctx, ticker: str = None):
                 return
 
             dec = data['final_decision']
-            roi = data['backtest_insight']['historical_roi'] if data['backtest_insight'] else "N/A"
+            roi = (data.get('backtest_insight') or {}).get('historical_roi', "N/A")
             record_user_query(ctx.author.name, data['meta']['ticker'], data['meta']['name'], dec['action'], dec['final_confidence'], roi)
 
             # P1 預測日誌：存下這次判斷，等 N 日後回填實際結果算命中率

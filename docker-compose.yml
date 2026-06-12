@@ -3,14 +3,16 @@ version: '3.8'
 services:
   linebot:
     build: .
-    ports:
-      - "5000:5000"
+    # 不直接對外發布 5000 埠，僅讓 nginx 透過內部網路反向代理
+    expose:
+      - "5000"
     environment:
       - FLASK_ENV=production
       - LINE_CHANNEL_SECRET=${LINE_CHANNEL_SECRET}
       - LINE_CHANNEL_ACCESS_TOKEN=${LINE_CHANNEL_ACCESS_TOKEN}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - GITHUB_REPO=${GITHUB_REPO}
+      - ADMIN_API_KEY=${ADMIN_API_KEY}
     volumes:
       - ./data:/app/data
     restart: unless-stopped

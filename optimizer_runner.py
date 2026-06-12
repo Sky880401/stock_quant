@@ -151,20 +151,23 @@ def find_best_params(ticker):
         best_os_score = -999
         best_max_dd = 999  # [新增] 最小化最大回撤
         best_sharpe = -999  # [新增] 最大化Sharpe
-        
+        best_combined = -float('inf')  # 內部選參用評分，與回報給使用者的 ROI 分開
+
         for p in params_list:
             run_params = {**p, **fixed_params}
             roi, wr, trades, avg_ratio, avg_loss, max_dd, sharpe, rtot = run_backtest(cls, df, **run_params)
-            
+
             # [新增] Walk-Forward驗證
             is_score, os_score = run_walk_forward_analysis(cls, df, run_params, train_ratio=0.8)
-            
+
             # [優化邏輯] 綜合多個指標的評分
-            # IS/OS均衡 + 風險調整 + Sharpe比率
-            combined_score = (is_score * 0.6 + os_score * 0.4) * (1.0 - max_dd / 50.0)  # 懲罰高回撤
-            
-            if combined_score > best_roi:
-                best_roi = combined_score
+            # IS/OS均衡 + 風險調整；回撤懲罰係數不可為負，否則負分策略會被反轉成正分
+            dd_factor = max(0.0, 1.0 - max_dd / 50.0)
+            combined_score = (is_score * 0.6 + os_score * 0.4) * dd_factor
+
+            if combined_score > best_combined:
+                best_combined = combined_score
+                best_roi = roi
                 best_wr = wr
                 best_trades = trades
                 best_p = p

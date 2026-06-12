@@ -225,7 +225,7 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
         "action": action,
         "position_size": pos_str,
         "time_horizon": "Mid-Term",
-        "final_confidence": round((100-risk_score)/100, 2) if 'risk_score' in locals() else score,
+        "final_confidence": round(max(0.0, min(score, 1.0)), 2),  # audit 修正:不再引用殘留的 risk_score,夾在 0~1
         "risk_factors": " | ".join(risk_flags) if risk_flags else "Low",
         "chip_insight": chip_res['reason'],
         "inst_insight": (inst_res or {}).get('reason', ''),

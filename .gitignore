@@ -6,8 +6,13 @@ venv/
 data/*.json
 .env
 
-# runtime logs (可重生，不納版控)
-logs/*.log
+# 執行期產物與個資（可重生），不入版控
+logs/
+data/*.csv
+data/*.db
+data/training_results/
+reports/
+*.deb
 
 # 籌碼/面板快取（可重生、體積大，不納版控）
 data/twse_chip/

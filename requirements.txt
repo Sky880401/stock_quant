@@ -21,3 +21,4 @@ discord.py
 # ── LINE（輔助平台，Discord-only 部署可不裝）─────
 line-bot-sdk
 Flask
+gunicorn        # line_webhook 生產環境 WSGI（勿用 Werkzeug debug 模式跑正式）

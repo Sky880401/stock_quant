@@ -35,6 +35,9 @@ def generate_moltbot_prompt(data, is_single=False):
     else:
         context = json.dumps(data.get("analysis", {}), indent=2, ensure_ascii=False)
         header = "【BMO 機構級量化決策報告】"
+        # 批次模式無單一標的，補上預設值避免下方共用模板 NameError（audit 修正）
+        ticker = data.get('meta', {}).get('ticker', 'PORTFOLIO')
+        name = data.get('meta', {}).get('name', '投資組合')
         guidance = ""
 
     _alert = (data.get("inst_avoid_alert") or {}) if isinstance(data, dict) else {}

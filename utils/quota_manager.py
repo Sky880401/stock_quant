@@ -85,12 +85,15 @@ def add_bonus(user_id, amount):
     save_quota(data)
     return new_bonus
 
-def admin_add_quota(user_id, amount):
-    """（保留）永久調高每日上限。一次性加值請用 add_bonus。"""
+def admin_add_quota(user_id, amount, base_limit=DEFAULT_LIMIT):
+    """（保留）永久調高每日上限。一次性加值請用 add_bonus。
+    base_limit: 用戶身分組的基礎上限 (free/beta/premium)，
+    避免送額度給高階會員時反而以 DEFAULT_LIMIT 起算降低其上限（audit 修正）。
+    """
     data = load_quota()
     user_str = str(user_id)
     data.setdefault("limits", {})
-    new_limit = data["limits"].get(user_str, DEFAULT_LIMIT) + amount
+    new_limit = data["limits"].get(user_str, base_limit) + amount
     data["limits"][user_str] = new_limit
     save_quota(data)
     return new_limit

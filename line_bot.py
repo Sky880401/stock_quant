@@ -56,6 +56,7 @@ class ValidationManager:
     
     # 配置
     MIN_CONTENT_LENGTH = 10  # 最小內容長度
+    MAX_CONTENT_LENGTH = 2000  # 最大內容長度 (避免超長訊息灌爆 GitHub Issue)
     MAX_FEEDBACK_PER_HOUR = 5  # 每小時最多反饋數
     DUPLICATE_TIMEFRAME = timedelta(hours=2)  # 去重時間框架
     RATE_LIMIT_ENABLED = True  # 是否啟用速率限制
@@ -71,6 +72,8 @@ class ValidationManager:
         # 1. 檢查長度
         if len(message.strip()) < cls.MIN_CONTENT_LENGTH:
             return False, f"消息過短 (最少 {cls.MIN_CONTENT_LENGTH} 字)"
+        if len(message) > cls.MAX_CONTENT_LENGTH:
+            return False, f"消息過長 (最多 {cls.MAX_CONTENT_LENGTH} 字)"
         
         # 2. 檢查敏感詞
         for pattern in cls.SENSITIVE_WORDS:
@@ -108,8 +111,10 @@ class ValidationManager:
             except:
                 continue
             
-            # 檢查相似性 (簡單的 substring 匹配)
-            if feedback.get("description", "").lower() in message.lower():
+            # 檢查相似性 (雙向 substring 匹配；空描述不可視為重複)
+            old_desc = feedback.get("description", "").lower().strip()
+            new_desc = message.lower().strip()
+            if old_desc and (old_desc in new_desc or new_desc in old_desc):
                 return True, "您最近提交過類似的反饋，請稍後再試"
         
         return False, ""
@@ -301,10 +306,11 @@ class GitHubIssueManager:
             # 決定標籤
             labels = self._get_labels(feedback_type)
             
-            # 準備 Issue 內容
+            # 準備 Issue 內容 (user_id 僅保留遮罩後的前綴，避免在公開 repo 洩漏 LINE 用戶 ID)
+            masked_user = f"{user_id[:6]}***" if user_id else "unknown"
             issue_body = f"""## 反饋信息
 
-**來源**: LINE Bot (@{user_id})  
+**來源**: LINE Bot (@{masked_user})
 **類型**: {self._get_type_label(feedback_type)}  
 **時間**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
