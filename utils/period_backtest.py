@@ -88,7 +88,7 @@ def run_backtest_by_period(strategy_cls, df: pd.DataFrame, period_name: str,
         period_df.index = pd.to_datetime(period_df.index)
     period_df = period_df[~period_df.index.duplicated(keep='first')].sort_index()
     if period_df.isnull().values.any():
-        period_df = period_df.fillna(method='ffill').fillna(method='bfill')
+        period_df = period_df.ffill().bfill()
     
     cerebro = bt.Cerebro()
     cerebro.addstrategy(strategy_cls, **kwargs)

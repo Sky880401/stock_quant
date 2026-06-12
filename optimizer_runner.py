@@ -64,7 +64,7 @@ def run_backtest(strategy_cls, df, **kwargs):
     if df.empty or len(df) < 100: return -999.0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0
     if not isinstance(df.index, pd.DatetimeIndex): df.index = pd.to_datetime(df.index)
     df = df[~df.index.duplicated(keep='first')].sort_index()
-    if df.isnull().values.any(): df = df.fillna(method='ffill').fillna(method='bfill')
+    if df.isnull().values.any(): df = df.ffill().bfill()
 
     cerebro = bt.Cerebro()
     cerebro.addstrategy(strategy_cls, **kwargs)
