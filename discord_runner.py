@@ -138,6 +138,30 @@ class QuantBot(commands.Bot):
 
 bot = QuantBot()
 
+# --- global permission gate (2026-06-13, Sky) -----------------------
+# Non-admin channel members may ONLY use !a (analyze); all other
+# commands are rejected. Matches on the command's primary name, so
+# aliases (e.g. "a") resolve to "analyze" automatically.
+PUBLIC_COMMANDS = {"analyze"}
+
+@bot.check
+async def _admin_only_gate(ctx):
+    perms = getattr(ctx.author, "guild_permissions", None)
+    if perms is not None and perms.administrator:
+        return True
+    if ctx.command and ctx.command.name in PUBLIC_COMMANDS:
+        return True
+    raise commands.CheckFailure("admin_only")
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CheckFailure):
+        await ctx.send("🔒 此指令僅限管理員。一般成員請用 `!a <代號>` 查詢個股分析。")
+        return
+    if isinstance(error, commands.CommandNotFound):
+        return
+    log_error("command error (%s): %s" % (getattr(ctx.command, "name", "?"), error))
+
 async def send_long(ctx, text, files=None):
     """Discord 單則上限 2000 字，超過就依段落切塊送出；附件掛在最後一則。"""
     LIMIT = 1990
