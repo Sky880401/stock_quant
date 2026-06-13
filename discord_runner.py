@@ -143,7 +143,7 @@ bot = QuantBot()
 # Non-admin channel members may ONLY use !a (analyze); all other
 # commands are rejected. Matches on the command's primary name, so
 # aliases (e.g. "a") resolve to "analyze" automatically.
-PUBLIC_COMMANDS = {"analyze"}
+PUBLIC_COMMANDS = {"analyze", "手冊"}
 
 @bot.check
 async def _admin_only_gate(ctx):
@@ -1410,6 +1410,15 @@ def sid_disp(sid):
 async def bind_channel(ctx):
     bot.target_channel_id = ctx.channel.id
     await ctx.send("✅ 綁定成功")
+
+# === 買股信心使用手冊（2026-06-13 Sky，一般使用者可看）===
+MANUAL_TEXT = '📖 **買股信心使用手冊**\n\n**一、這些演算法在做什麼？（白話）**\n技術指標只是「把過去股價用數學換算成買/賣/觀望訊號」，沒有一個是水晶球。\n• **MA 均線**：最近N天平均價，看趨勢。站上長期均線=多頭、跌破=空頭（像水位線）\n• **RSI**：0~100，看最近漲多還跌多。>70超買(可能回檔)、<30超賣(可能反彈)（像彈簧）\n• **MACD**：短期vs長期動能差，抓趨勢轉強/轉弱（像加速度）\n• **KD**：跟RSI同家族，抓超買超賣+轉折\n• **布林帶**：均線±波動範圍，碰上緣=過熱、碰下緣=過冷\n重點：每個指標抓的「習慣」不同，同檔給不同答案很正常。\n\n**二、為什麼有「勝率」？**\n勝率＝照這訊號做，過去歷史有幾成是賺的。算法：過去每次喊買就假裝買進，過20天看賺賠，賺的次數÷總次數。\n⚠️ 三個重點：\n• 勝率是「過去」統計，不保證未來\n• 樣本要夠多才可信（3筆100%是假的，要幾十~幾百筆）\n• 不可能100%；**53~57%就很厲害了**，有人說90%就要懷疑\n\n**三、判斷一檔能不能買，跑什麼？**\n系統已把所有面向整合在 `!a` 裡：\n① **`!a <代號>`**：一次算完技術/基本面/籌碼/上漲機率/避雷\n② 看這幾欄：最終建議(BUY/HOLD/SELL)、信心度(>0.6才有底氣)、上漲機率+樣本數(>55%且樣本多才可信)、法人避雷(出現 heavy=紅燈別追)、距停損/目標區間\n③ **看面向一致性(最重要)**：技術說買＋法人也買＋沒避雷=信心高；互相打架=別追\n④ 想更保險：`!validate <代號>`（樣本外驗證，揭穿過度擬合）\n\n**四、🟢 買進信心檢查清單（打勾越多越敢買）**\n☐ `!a` 建議 BUY 且信心 >0.6\n☐ 上漲機率 >55% 且樣本夠\n☐ 沒有法人避雷（heavy）\n☐ 多面向一致（技術＋籌碼＋基本面沒打架）\n☐ 風報比合理（賺的空間 > 賠的空間 至少1.5倍）\n打勾越多信心越高，但永遠沒100%——**一定設停損、控部位**。\n\n**五、心法（最重要）**\n🚫 沒有聖杯指標，每個都會錯 → 看「多面向一致」\n🚫 勝率/Sharpe漂亮但樣本少 = 過度擬合，不信\n✅ 一定設停損、別all in\n📅 系統是中期波段（看幾週~幾個月），不是當沖\n💰 賺不賺看「有沒有贏過買進持有（躺著不動）」'
+
+@bot.command(name="手冊", aliases=["guide", "教學", "買股手冊", "說明書"])
+async def show_manual(ctx):
+    """買股信心使用手冊（一般使用者也可看）。"""
+    await send_long(ctx, MANUAL_TEXT)
+
 
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
