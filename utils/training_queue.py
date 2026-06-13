@@ -34,11 +34,12 @@ class TrainingTask:
     def create(user_id: int, strategy: str, ticker: str, 
                start_date: str, end_date: str,
                target_roi: float = 15.0, target_win_rate: float = 0.60,
-               param_grid: Optional[Dict] = None) -> "TrainingTask":
+               param_grid: Optional[Dict] = None, channel_id: Optional[int] = None) -> "TrainingTask":
         """创建新的训练任务"""
         return TrainingTask({
             "task_id": f"train_{datetime.now().strftime('%Y%m%d')}_{str(uuid.uuid4())[:8]}",
             "user_id": user_id,
+            "channel_id": channel_id,
             "status": "queued",
             "created_at": datetime.utcnow().isoformat() + "Z",
             "started_at": None,
@@ -84,7 +85,8 @@ class TrainingQueue:
                        start_date: str, end_date: str,
                        target_roi: float = 15.0,
                        target_win_rate: float = 0.60,
-                       param_grid: Optional[Dict] = None) -> str:
+                       param_grid: Optional[Dict] = None,
+                       channel_id: Optional[int] = None) -> str:
         """
         提交訓練任務
         
@@ -132,7 +134,7 @@ class TrainingQueue:
         
         task = TrainingTask.create(
             user_id, strategy, ticker, start_date, end_date,
-            target_roi, target_win_rate, param_grid
+            target_roi, target_win_rate, param_grid, channel_id
         )
         
         # 添加到队列 (线程安全)
@@ -199,10 +201,12 @@ class TrainingQueue:
             self._update_task_result(task_id, results, "completed")
             
             log_info(f"✅ 训练完成: {task_id}")
+            self._fire_completion(task_id)
             
         except Exception as e:
             log_error(f"❌ 训练失败: {task_id}, {str(e)}")
             self._update_task_error(task_id, str(e))
+            self._fire_completion(task_id)
     
     def _execute_grid_search(self, task: TrainingTask, task_id: str) -> Dict:
         """
@@ -392,6 +396,27 @@ class TrainingQueue:
             error=error,
             progress=0
         )
+
+    def _fire_completion(self, task_id: str):
+        """任務結束(完成/失敗)後通知 discord_runner 把結果推回頻道；通知錯誤不影響 worker。"""
+        try:
+            if _completion_callback is None:
+                return
+            task = self.get_task(task_id)
+            if task is not None:
+                _completion_callback(task.to_dict())
+        except Exception as e:
+            log_error(f"訓練完成通知失敗(已忽略): {e}")
+
+
+# 任務完成回呼（discord_runner 在 on_ready 註冊）
+_completion_callback = None
+
+
+def set_completion_callback(cb):
+    """註冊『訓練完成/失敗』回呼。cb(task_dict) 會在 worker 執行緒被呼叫。"""
+    global _completion_callback
+    _completion_callback = cb
 
 
 # 全局实例

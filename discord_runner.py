@@ -97,6 +97,7 @@ class QuantBot(commands.Bot):
     async def on_ready(self):
         log_info(f"🤖 BMO V10.1 (BETA Role + Format) 上線: {self.user.name}")
         await asyncio.to_thread(load_stock_map)
+        _register_training_notifier()
         if not self.daily_scan_task.is_running():
             self.daily_scan_task.start()
         if not self.daily_rank_task.is_running():
@@ -604,6 +605,68 @@ async def show_strategies(ctx, mode: str = None):
         await ctx.send(f"❌ 發生錯誤: {str(e)}")
 
 
+# === 訓練完成自動回傳結果（2026-06-13 Sky）===
+def _register_training_notifier():
+    """on_ready 時掛上訓練完成回呼。"""
+    try:
+        from utils.training_queue import get_training_queue, set_completion_callback
+        get_training_queue()
+        set_completion_callback(_on_training_done)
+        log_info("📨 訓練完成通知已掛載")
+    except Exception as e:
+        log_error(f"掛載訓練通知失敗: {e}")
+
+
+def _on_training_done(task):
+    """worker 執行緒呼叫：把結果排到 bot event loop 發回 Discord。"""
+    try:
+        asyncio.run_coroutine_threadsafe(_send_training_result(task), bot.loop)
+    except Exception as e:
+        log_error(f"排程訓練通知失敗: {e}")
+
+
+async def _send_training_result(task):
+    try:
+        ch_id = task.get("channel_id")
+        if not ch_id:
+            return
+        channel = bot.get_channel(int(ch_id))
+        if channel is None:
+            return
+        uid = task.get("user_id")
+        cfg = task.get("config", {}) or {}
+        strat = cfg.get("strategy", "?")
+        ticker = cfg.get("stock_ticker", "?")
+        tid = task.get("task_id", "?")
+        mention = f"<@{uid}>" if uid else ""
+        if task.get("status") == "completed":
+            res = task.get("results", {}) or {}
+            e = discord.Embed(title="✅ 訓練完成", color=discord.Color.green())
+            e.add_field(name="策略", value=TRAIN_STRATEGY_LABELS.get(strat, strat), inline=True)
+            e.add_field(name="股票", value=str(ticker), inline=True)
+            e.add_field(name="任務ID", value=f"`{tid}`", inline=False)
+            if res.get("best_params") is not None:
+                bp = ", ".join(f"{k}={v}" for k, v in res["best_params"].items())
+                e.add_field(name="最佳參數", value=f"`{bp}`", inline=False)
+                e.add_field(name="ROI", value=f"{res.get('best_roi', '?')}%", inline=True)
+                e.add_field(name="勝率", value=f"{res.get('best_win_rate', '?')}%", inline=True)
+                e.add_field(name="Sharpe", value=f"{res.get('best_sharpe', '?')}", inline=True)
+                e.add_field(name="交易次數", value=f"{res.get('best_total_trades', '?')}", inline=True)
+                e.add_field(name="最大回撤", value=f"{res.get('best_max_dd', '?')}%", inline=True)
+                e.set_footer(text=f"測試 {res.get('successful_combinations', '?')}/{res.get('total_combinations_tested', '?')} 組 | !train-status {tid} 看完整")
+            else:
+                e.description = f"完成，用 `!train-status {tid}` 看詳情。"
+            await channel.send(content=mention or None, embed=e)
+        elif task.get("status") == "failed":
+            err = str(task.get("error", "未知錯誤"))[:300]
+            e = discord.Embed(title="❌ 訓練失敗", color=discord.Color.red(),
+                              description=f"策略 {strat} / {ticker}\n錯誤：{err}")
+            e.set_footer(text=f"任務 {tid}")
+            await channel.send(content=mention or None, embed=e)
+    except Exception as ex:
+        log_error(f"發送訓練結果失敗: {ex}")
+
+
 # === 通用互動元件（2026-06-13 Sky：多參數指令改點選）===
 class _PanelSelect(discord.ui.Select):
     def __init__(self, owner_id, options, placeholder, on_pick):
@@ -806,7 +869,8 @@ async def _train_do_submit(ctx, strategy, ticker, period, target_roi):
         return
     queue = get_training_queue()
     task_id = queue.submit_training(user_id=ctx.author.id, strategy=strategy, ticker=ticker,
-                                    start_date=start_date, end_date=end_date, target_roi=target_roi)
+                                    start_date=start_date, end_date=end_date, target_roi=target_roi,
+                                    channel_id=ctx.channel.id)
     embed = discord.Embed(title="📊 訓練任務已提交", color=discord.Color.blue())
     embed.add_field(name="任務ID", value=f"`{task_id}`", inline=False)
     embed.add_field(name="策略", value=TRAIN_STRATEGY_LABELS.get(strategy, strategy), inline=True)
