@@ -653,12 +653,27 @@ async def _send_training_result(task):
             e.add_field(name="股票", value=str(ticker), inline=True)
             e.add_field(name="任務ID", value=f"`{tid}`", inline=False)
             if res.get("best_params") is not None:
+                trades = res.get("best_total_trades", 0) or 0
+                roi = res.get("best_roi")
+                target = (task.get("config", {}) or {}).get("target_roi")
+                bh = res.get("buy_hold_roi")
+                unreliable = isinstance(trades, (int, float)) and trades < 20
+                if unreliable:
+                    e.color = discord.Color.orange()
+                    e.description = f"⚠️ **樣本太少（{trades} 筆交易），結果不可信、可能過度擬合，請勿據此操作。**"
                 bp = ", ".join(f"{k}={v}" for k, v in res["best_params"].items())
                 e.add_field(name="最佳參數", value=f"`{bp}`", inline=False)
-                e.add_field(name="ROI", value=f"{res.get('best_roi', '?')}%", inline=True)
+                roi_txt = f"{roi}%"
+                if target is not None and isinstance(roi, (int, float)):
+                    roi_txt += "  " + ("✅達標" if roi >= float(target) else f"❌未達標(目標{float(target):.0f}%)")
+                e.add_field(name="ROI", value=roi_txt, inline=True)
+                if bh is not None and isinstance(roi, (int, float)):
+                    exc = roi - bh
+                    e.add_field(name="買進持有", value=f"{bh}%", inline=True)
+                    e.add_field(name="超額(贏過抱著)", value=f"{exc:+.2f}%" + (" 👍" if exc > 0 else " 👎"), inline=True)
                 e.add_field(name="勝率", value=f"{res.get('best_win_rate', '?')}%", inline=True)
-                e.add_field(name="Sharpe", value=f"{res.get('best_sharpe', '?')}", inline=True)
-                e.add_field(name="交易次數", value=f"{res.get('best_total_trades', '?')}", inline=True)
+                e.add_field(name="報酬/回撤比", value=f"{res.get('best_sharpe', '?')}（非真Sharpe,僅參考）", inline=True)
+                e.add_field(name="交易次數", value=f"{trades}" + ("  ⚠️太少" if unreliable else ""), inline=True)
                 e.add_field(name="最大回撤", value=f"{res.get('best_max_dd', '?')}%", inline=True)
                 e.set_footer(text=f"測試 {res.get('successful_combinations', '?')}/{res.get('total_combinations_tested', '?')} 組 | !train-status {tid} 看完整")
             else:
