@@ -73,6 +73,7 @@ def run_backtest(strategy_cls, df, **kwargs):
     cerebro.adddata(data)
     cerebro.broker.setcash(100000.0)
     cerebro.broker.setcommission(commission=0.001425)
+    cerebro.addsizer(bt.sizers.PercentSizer, percents=95)  # 修(2026-06-13):用95%資金下單,讓ROI反映真實報酬(原預設1股→ROI~0失真)
     cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
     cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")  # [新增]
     cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")  # [新增]

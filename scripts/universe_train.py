@@ -87,8 +87,8 @@ def main():
                "stocks_used": used, "avg_roi": round(avg_roi, 2), "med_roi": round(med_roi, 2),
                "pct_profitable": round(profitable / used * 100, 1) if used else 0,
                "avg_bh": round(bh, 2), "excess": round(avg_roi - bh, 2)}
-        # 以「匯總勝率」挑最佳，但要求總交易數夠
-        score = pooled_wr if tot_trades >= 100 else -1
+        # 以「超額報酬(贏過買進持有)」挑最佳,要求總交易數夠(ROI已修可信)
+        score = rec["excess"] if tot_trades >= 100 else -999
         if best is None or score > best[0]:
             best = (score, rec)
         print(f"[{ci}/{len(cmbs)}] {params} → 匯總勝率 {rec['pooled_wr']}% | 總交易 {rec['tot_trades']} "
