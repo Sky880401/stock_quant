@@ -316,21 +316,13 @@ async def show_period_analysis(ctx, strategy: str = None):
                 await ctx.send("❌ 沒有可用的時間段分析結果\n請先執行回測分析: !analyze <ticker>")
                 return
             
-            strategies_list = list(results.keys())
-            embed = discord.Embed(
-                title="📊 可用的策略分析",
-                description=f"共 {len(strategies_list)} 個策略",
-                color=discord.Color.blue()
-            )
-            
-            text = ""
-            for i, strat_name in enumerate(strategies_list[:10], 1):
-                text += f"{i}. `{strat_name}`\n"
-            
-            embed.add_field(name="策略列表", value=text or "無", inline=False)
-            embed.set_footer(text="使用 !period <strategy_name> 查看詳細分析")
-            
-            await ctx.send(embed=embed)
+            keys = [k for k in results.keys()][:25]
+            opts = [discord.SelectOption(label=str(k)[:100], value=str(k)[:100]) for k in keys]
+            async def _pick(val):
+                await ctx.invoke(show_period_analysis, strategy=val)
+            await ctx.send("📊 請選擇要查看的策略時間段分析：",
+                           view=SimpleSelectView(ctx.author.id, opts, "選策略分析…", _pick))
+            return
         else:
             # 显示特定策略的分析结果
             result = await asyncio.to_thread(load_period_results, strategy)
@@ -529,6 +521,25 @@ async def show_strategies(ctx, mode: str = None):
         
         registry = get_strategy_registry()
         
+        # Sky 反饋：沒給模式→開下拉選單點選（免記 category:/sort: 語法）
+        if mode is None:
+            opts = [
+                discord.SelectOption(label="全部（按勝率）", value="__all__"),
+                discord.SelectOption(label="詳細模式", value="detail"),
+                discord.SelectOption(label="分類：指標", value="category:indicator"),
+                discord.SelectOption(label="分類：ML", value="category:ml"),
+                discord.SelectOption(label="分類：價格行為", value="category:price_action"),
+                discord.SelectOption(label="分類：綜合", value="category:comprehensive"),
+                discord.SelectOption(label="排序：勝率", value="sort:win_rate"),
+                discord.SelectOption(label="排序：Sharpe", value="sort:sharpe"),
+                discord.SelectOption(label="排序：ROI", value="sort:roi"),
+            ]
+            async def _pick(val):
+                await ctx.invoke(show_strategies, mode=val)
+            await ctx.send("📈 請選擇檢視方式：",
+                           view=SimpleSelectView(ctx.author.id, opts, "選檢視方式…", _pick))
+            return
+
         # 解析參數
         if mode and mode.startswith("category:"):
             category = mode.split(":")[1]
@@ -591,6 +602,59 @@ async def show_strategies(ctx, mode: str = None):
     except Exception as e:
         log_error(f"!strategies 命令失敗: {e}")
         await ctx.send(f"❌ 發生錯誤: {str(e)}")
+
+
+# === 通用互動元件（2026-06-13 Sky：多參數指令改點選）===
+class _PanelSelect(discord.ui.Select):
+    def __init__(self, owner_id, options, placeholder, on_pick):
+        super().__init__(placeholder=placeholder, min_values=1, max_values=1, options=options)
+        self.owner_id = owner_id
+        self._on_pick = on_pick
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("⛔ 這是別人的操作，請自己下指令。", ephemeral=True)
+            return
+        val = self.values[0]
+        await interaction.response.edit_message(content="✅ 已選擇，處理中…", view=None)
+        await self._on_pick(val)
+
+
+class SimpleSelectView(discord.ui.View):
+    """單一下拉選單面板：選完即呼叫 on_pick(value)。"""
+    def __init__(self, owner_id, options, placeholder, on_pick):
+        super().__init__(timeout=90)
+        self.add_item(_PanelSelect(owner_id, options, placeholder, on_pick))
+
+
+class _TickerOnlyModal(discord.ui.Modal, title="輸入股票代號"):
+    ti = discord.ui.TextInput(label="股票代號", placeholder="例如 2317 或 2330.TW", required=True, max_length=12)
+
+    def __init__(self, on_submit):
+        super().__init__()
+        self._on_submit = on_submit
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(content="✅ 收到，處理中…", view=None)
+        await self._on_submit(str(self.ti.value).strip())
+
+
+class TickerEntryView(discord.ui.View):
+    """單一股票代號輸入面板：按鈕→Modal→on_submit(ticker)。"""
+    def __init__(self, owner_id, on_submit):
+        super().__init__(timeout=90)
+        self.owner_id = owner_id
+        self._on_submit = on_submit
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("⛔ 這是別人的操作。", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="輸入股票代號", emoji="✏️", style=discord.ButtonStyle.primary)
+    async def enter(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(_TickerOnlyModal(self._on_submit))
 
 
 # === !train 互動式選單面板（2026-06-13 Sky 反饋：參數多易打錯）===
@@ -1061,7 +1125,10 @@ def _run_walk_forward(ticker):
 async def validate_strategy(ctx, ticker: str = None):
     """P5 walk-forward 驗證：對某股做樣本外回測，揭露策略穩定性/過擬合。"""
     if not ticker:
-        await ctx.send("用法：`!validate 2330`（對該股跑樣本外驗證）")
+        async def _run(tk):
+            await ctx.invoke(validate_strategy, ticker=tk)
+        await ctx.send("🔬 要驗證哪一檔？按下方輸入股票代號：",
+                       view=TickerEntryView(ctx.author.id, _run))
         return
     try:
         await ctx.defer()
