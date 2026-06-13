@@ -302,6 +302,11 @@ class TrainingQueue:
         best_result["total_combinations_tested"] = total_combos
         best_result["successful_combinations"] = len(results_log)
         best_result["top_results"] = sorted(results_log, key=lambda x: x["score"], reverse=True)[:5]
+        # 買進持有對照(同期一直抱著的報酬%)——讓 ROI 有意義
+        try:
+            best_result["buy_hold_roi"] = round((float(df_period["Close"].iloc[-1]) / float(df_period["Close"].iloc[0]) - 1) * 100, 2)
+        except Exception:
+            best_result["buy_hold_roi"] = None
         
         return best_result
     
