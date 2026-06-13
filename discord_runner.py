@@ -641,6 +641,13 @@ async def _send_training_result(task):
         mention = f"<@{uid}>" if uid else ""
         if task.get("status") == "completed":
             res = task.get("results", {}) or {}
+            # 防呆：回測因資料不足回 -999 哨兵時，給友善提示而非垃圾數字
+            if res.get("best_roi") in (-999, -999.0) or res.get("best_total_trades") == 0:
+                e = discord.Embed(title="⚠️ 訓練無有效結果", color=discord.Color.orange(),
+                                  description=f"策略 {TRAIN_STRATEGY_LABELS.get(strat, strat)} / {ticker}：這段期間資料太少或沒有產生交易，跑不出有效回測。請改選『近一年』或『全部歷史』再試。")
+                e.set_footer(text=f"任務 {tid}")
+                await channel.send(content=mention or None, embed=e)
+                return
             e = discord.Embed(title="✅ 訓練完成", color=discord.Color.green())
             e.add_field(name="策略", value=TRAIN_STRATEGY_LABELS.get(strat, strat), inline=True)
             e.add_field(name="股票", value=str(ticker), inline=True)
@@ -734,8 +741,8 @@ TRAIN_STRATEGY_LABELS = {
     "混合预测 (ML)": "混合預測（ML）",
     "综合策略": "綜合策略",
 }
-TRAIN_PERIODS = [("month", "近一個月"), ("week", "近一週"), ("year", "近一年"),
-                 ("ytd", "今年至今"), ("full", "全部歷史"), ("today", "今天")]
+# 2026-06-13：拿掉太短期間——回測需 ≥100 交易日(run_backtest)，近一週/月/今天必回 -999 垃圾值
+TRAIN_PERIODS = [("year", "近一年"), ("ytd", "今年至今"), ("full", "全部歷史")]
 TRAIN_ROIS = ["10", "15", "20", "25", "30"]
 
 
