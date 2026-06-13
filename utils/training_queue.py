@@ -238,6 +238,8 @@ class TrainingQueue:
         df_period = filter_data_by_date_range(df, config["start_date"], config["end_date"])
         if df_period.empty:
             raise RuntimeError(f"日期范围内无数据: {config['start_date']} ~ {config['end_date']}")
+        if len(df_period) < 100:
+            raise RuntimeError(f"資料太少：此時間段只有 {len(df_period)} 個交易日，回測至少需要 100 個（約 5 個月）。請改選『近一年』或『全部歷史』。")
         
         # 生成参数组合
         param_grid = config["param_grid"]
