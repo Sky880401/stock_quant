@@ -316,21 +316,13 @@ async def show_period_analysis(ctx, strategy: str = None):
                 await ctx.send("❌ 沒有可用的時間段分析結果\n請先執行回測分析: !analyze <ticker>")
                 return
             
-            strategies_list = list(results.keys())
-            embed = discord.Embed(
-                title="📊 可用的策略分析",
-                description=f"共 {len(strategies_list)} 個策略",
-                color=discord.Color.blue()
-            )
-            
-            text = ""
-            for i, strat_name in enumerate(strategies_list[:10], 1):
-                text += f"{i}. `{strat_name}`\n"
-            
-            embed.add_field(name="策略列表", value=text or "無", inline=False)
-            embed.set_footer(text="使用 !period <strategy_name> 查看詳細分析")
-            
-            await ctx.send(embed=embed)
+            keys = [k for k in results.keys()][:25]
+            opts = [discord.SelectOption(label=str(k)[:100], value=str(k)[:100]) for k in keys]
+            async def _pick(val):
+                await ctx.invoke(show_period_analysis, strategy=val)
+            await ctx.send("📊 請選擇要查看的策略時間段分析：",
+                           view=SimpleSelectView(ctx.author.id, opts, "選策略分析…", _pick))
+            return
         else:
             # 显示特定策略的分析结果
             result = await asyncio.to_thread(load_period_results, strategy)
@@ -529,6 +521,25 @@ async def show_strategies(ctx, mode: str = None):
         
         registry = get_strategy_registry()
         
+        # Sky 反饋：沒給模式→開下拉選單點選（免記 category:/sort: 語法）
+        if mode is None:
+            opts = [
+                discord.SelectOption(label="全部（按勝率）", value="__all__"),
+                discord.SelectOption(label="詳細模式", value="detail"),
+                discord.SelectOption(label="分類：指標", value="category:indicator"),
+                discord.SelectOption(label="分類：ML", value="category:ml"),
+                discord.SelectOption(label="分類：價格行為", value="category:price_action"),
+                discord.SelectOption(label="分類：綜合", value="category:comprehensive"),
+                discord.SelectOption(label="排序：勝率", value="sort:win_rate"),
+                discord.SelectOption(label="排序：Sharpe", value="sort:sharpe"),
+                discord.SelectOption(label="排序：ROI", value="sort:roi"),
+            ]
+            async def _pick(val):
+                await ctx.invoke(show_strategies, mode=val)
+            await ctx.send("📈 請選擇檢視方式：",
+                           view=SimpleSelectView(ctx.author.id, opts, "選檢視方式…", _pick))
+            return
+
         # 解析參數
         if mode and mode.startswith("category:"):
             category = mode.split(":")[1]
@@ -593,101 +604,252 @@ async def show_strategies(ctx, mode: str = None):
         await ctx.send(f"❌ 發生錯誤: {str(e)}")
 
 
+# === 通用互動元件（2026-06-13 Sky：多參數指令改點選）===
+class _PanelSelect(discord.ui.Select):
+    def __init__(self, owner_id, options, placeholder, on_pick):
+        super().__init__(placeholder=placeholder, min_values=1, max_values=1, options=options)
+        self.owner_id = owner_id
+        self._on_pick = on_pick
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("⛔ 這是別人的操作，請自己下指令。", ephemeral=True)
+            return
+        val = self.values[0]
+        await interaction.response.edit_message(content="✅ 已選擇，處理中…", view=None)
+        await self._on_pick(val)
+
+
+class SimpleSelectView(discord.ui.View):
+    """單一下拉選單面板：選完即呼叫 on_pick(value)。"""
+    def __init__(self, owner_id, options, placeholder, on_pick):
+        super().__init__(timeout=90)
+        self.add_item(_PanelSelect(owner_id, options, placeholder, on_pick))
+
+
+class _TickerOnlyModal(discord.ui.Modal, title="輸入股票代號"):
+    ti = discord.ui.TextInput(label="股票代號", placeholder="例如 2317 或 2330.TW", required=True, max_length=12)
+
+    def __init__(self, on_submit):
+        super().__init__()
+        self._on_submit = on_submit
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(content="✅ 收到，處理中…", view=None)
+        await self._on_submit(str(self.ti.value).strip())
+
+
+class TickerEntryView(discord.ui.View):
+    """單一股票代號輸入面板：按鈕→Modal→on_submit(ticker)。"""
+    def __init__(self, owner_id, on_submit):
+        super().__init__(timeout=90)
+        self.owner_id = owner_id
+        self._on_submit = on_submit
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("⛔ 這是別人的操作。", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="輸入股票代號", emoji="✏️", style=discord.ButtonStyle.primary)
+    async def enter(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(_TickerOnlyModal(self._on_submit))
+
+
+# === !train 互動式選單面板（2026-06-13 Sky 反饋：參數多易打錯）===
+# 重點：策略 registry 的 key 是「簡體字」，台灣用戶打繁體會比對不到→報未知策略。
+# 下拉選單讓使用者看繁體標籤、程式用正確簡體 key，一次解掉「打錯 + 繁簡不符」。
+TRAIN_STRATEGY_LABELS = {
+    "MA交叉": "MA 交叉（均線）",
+    "RSI反转": "RSI 反轉",
+    "MACD动能": "MACD 動能",
+    "KD随机指标": "KD 隨機指標",
+    "布林带策略": "布林帶策略",
+    "价值估值": "價值估值",
+    "回撤交易": "回撤交易",
+    "混合预测 (ML)": "混合預測（ML）",
+    "综合策略": "綜合策略",
+}
+TRAIN_PERIODS = [("month", "近一個月"), ("week", "近一週"), ("year", "近一年"),
+                 ("ytd", "今年至今"), ("full", "全部歷史"), ("today", "今天")]
+TRAIN_ROIS = ["10", "15", "20", "25", "30"]
+
+
+def _train_strategy_keys():
+    """以 registry 實際存在的 key 為準，僅保留有中文標籤者，避免顯示到不存在的策略。"""
+    try:
+        from strategies.strategy_registry import get_strategy_registry
+        keys = list(get_strategy_registry().strategies.keys())
+        return [k for k in keys if k in TRAIN_STRATEGY_LABELS] or list(TRAIN_STRATEGY_LABELS.keys())
+    except Exception:
+        return list(TRAIN_STRATEGY_LABELS.keys())
+
+
+class TickerModal(discord.ui.Modal, title="輸入股票代號"):
+    ticker_input = discord.ui.TextInput(
+        label="股票代號", placeholder="例如 2317 或 2330.TW", required=True, max_length=12)
+
+    def __init__(self, parent_view):
+        super().__init__()
+        self.parent_view = parent_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.parent_view.ticker = str(self.ticker_input.value).strip()
+        await interaction.response.edit_message(embed=self.parent_view.build_embed(), view=self.parent_view)
+
+
+class TrainConfigView(discord.ui.View):
+    """!train 的點選式設定面板：策略/時間段/目標ROI 用下拉、股票代號用 Modal。"""
+
+    def __init__(self, ctx, user_id, ticker=None):
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.user_id = user_id
+        self.ticker = ticker
+        self.strategy = None
+        self.period = None
+        self.target_roi = 15.0
+        self.submitted = False
+        self._build_selects()
+
+    def _build_selects(self):
+        strat = discord.ui.Select(
+            placeholder="① 選策略", min_values=1, max_values=1, row=0,
+            options=[discord.SelectOption(label=TRAIN_STRATEGY_LABELS[k], value=k)
+                     for k in _train_strategy_keys()])
+        strat.callback = self._on_strategy
+        self.add_item(strat)
+        period = discord.ui.Select(
+            placeholder="② 選時間段", min_values=1, max_values=1, row=1,
+            options=[discord.SelectOption(label=lab, value=v) for v, lab in TRAIN_PERIODS])
+        period.callback = self._on_period
+        self.add_item(period)
+        roi = discord.ui.Select(
+            placeholder="③ 選目標 ROI(%)", min_values=1, max_values=1, row=2,
+            options=[discord.SelectOption(label=f"{r}%", value=r) for r in TRAIN_ROIS])
+        roi.callback = self._on_roi
+        self.add_item(roi)
+
+    def build_embed(self):
+        e = discord.Embed(title="🎓 眾包訓練設定", color=discord.Color.blurple(),
+                          description="用下面的選單**點選**就好，不用打字。選好後按 **✅ 送出訓練**。")
+        e.add_field(name="股票代號", value=self.ticker or "（尚未設定，按 ✏️ 輸入）", inline=False)
+        e.add_field(name="策略", value=TRAIN_STRATEGY_LABELS.get(self.strategy, "未選"), inline=True)
+        e.add_field(name="時間段", value=dict(TRAIN_PERIODS).get(self.period, "未選"), inline=True)
+        e.add_field(name="目標ROI", value=f"{self.target_roi:.0f}%", inline=True)
+        return e
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "⛔ 這是別人的訓練設定，請自己打 `!train` 開新的。", ephemeral=True)
+            return False
+        return True
+
+    async def _on_strategy(self, interaction: discord.Interaction):
+        self.strategy = interaction.data["values"][0]
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _on_period(self, interaction: discord.Interaction):
+        self.period = interaction.data["values"][0]
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _on_roi(self, interaction: discord.Interaction):
+        self.target_roi = float(interaction.data["values"][0])
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="股票代號", emoji="✏️", style=discord.ButtonStyle.secondary, row=3)
+    async def set_ticker(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(TickerModal(self))
+
+    @discord.ui.button(label="✅ 送出訓練", style=discord.ButtonStyle.green, row=3)
+    async def submit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        missing = []
+        if not self.ticker:
+            missing.append("股票代號")
+        if not self.strategy:
+            missing.append("策略")
+        if not self.period:
+            missing.append("時間段")
+        if missing:
+            await interaction.response.send_message("⚠️ 還沒選：" + "、".join(missing), ephemeral=True)
+            return
+        self.submitted = True
+        await interaction.response.edit_message(content="🚀 已送出，計算中…", embed=self.build_embed(), view=None)
+        self.stop()
+
+    @discord.ui.button(label="❌ 取消", style=discord.ButtonStyle.red, row=3)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="已取消。", embed=None, view=None)
+        self.submitted = False
+        self.stop()
+
+
+async def _train_do_submit(ctx, strategy, ticker, period, target_roi):
+    """共用送出邏輯：驗策略→解時間段→進佇列→回報（打字路徑與面板路徑共用）。"""
+    from utils.training_queue import get_training_queue
+    from strategies.strategy_registry import get_strategy_registry
+
+    registry = get_strategy_registry()
+    if strategy not in registry.strategies:
+        available = ", ".join(list(registry.strategies.keys())[:5])
+        await ctx.send(embed=discord.Embed(
+            title="❌ 未知策略",
+            description=f"策略 `{strategy}` 不存在\n\n**可用策略**: {available}...",
+            color=discord.Color.red()))
+        return
+    try:
+        start_date, end_date = _parse_period_to_dates(period)
+    except ValueError as e:
+        await ctx.send(embed=discord.Embed(title="❌ 無效的時間段", description=str(e), color=discord.Color.red()))
+        return
+    queue = get_training_queue()
+    task_id = queue.submit_training(user_id=ctx.author.id, strategy=strategy, ticker=ticker,
+                                    start_date=start_date, end_date=end_date, target_roi=target_roi)
+    embed = discord.Embed(title="📊 訓練任務已提交", color=discord.Color.blue())
+    embed.add_field(name="任務ID", value=f"`{task_id}`", inline=False)
+    embed.add_field(name="策略", value=TRAIN_STRATEGY_LABELS.get(strategy, strategy), inline=True)
+    embed.add_field(name="股票", value=ticker, inline=True)
+    embed.add_field(name="時間段", value=f"{start_date} ~ {end_date}", inline=True)
+    embed.add_field(name="目標ROI", value=f"{target_roi}%", inline=True)
+    embed.add_field(name="預計等待時間", value="2-10分鐘 (根據參數數量和伺服器負載)", inline=False)
+    embed.set_footer(text="💡 使用 !train-status <task_id> 查看進度")
+    await ctx.send(embed=embed)
+
+
 @bot.command(name="train", aliases=["training", "optimize"])
 async def train_strategy(ctx, *args):
-    """
-    眾包訓練命令: 提交策略參數優化任務
-    
-    用法:
-        !train MA交叉 2330.TW month --roi 20
-        !train RSI反轉 2888.TW year
-        !train --help
-    
-    支持的策略: MA交叉, RSI反轉, MACD動能, KD隨機指標, 布林帶策略, 價值估值, 回撤交易
-    支持的時間段: today, week, month, year, ytd, full, 或自訂義 YYYY-MM-DD:YYYY-MM-DD
+    """眾包訓練：不帶完整參數 → 開點選面板；帶 3+ 參數 → 沿用打字路徑。
+
+    面板用法（推薦）: !train  或  !train 2317
+    打字用法（熟手）: !train MACD动能 2330.TW month --roi 20
     """
     try:
-        from utils.training_queue import get_training_queue
-        from strategies.strategy_registry import get_strategy_registry
-        
-        # 手動解析參數
+        # 沒給足參數 → 開互動選單面板（解掉參數多/繁簡key打錯的痛點）
         if len(args) < 3:
-            embed = discord.Embed(
-                title="❌ 參數缺失",
-                description="**用法**: `!train <策略> <股票代碼> <時間段> [--roi 目標ROI]`\n\n"
-                           "**示例**: `!train MA交叉 2330.TW month --roi 20`\n\n"
-                           "**支持的時間段**: today, week, month, year, ytd, full",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed)
+            ticker = args[0] if (len(args) >= 1 and not args[0].startswith("--")) else None
+            view = TrainConfigView(ctx, ctx.author.id, ticker=ticker)
+            await ctx.send(embed=view.build_embed(), view=view)
+            await view.wait()
+            if not view.submitted:
+                return
+            await _train_do_submit(ctx, view.strategy, view.ticker, view.period, view.target_roi)
             return
-        
+
+        # 打字路徑（向後相容）
         strategy = args[0]
         ticker = args[1]
         period = args[2]
-        target_roi = 15.0  # 預設值
-        
-        # 解析 --roi 參數
+        target_roi = 15.0
         if len(args) >= 5 and args[3] == "--roi":
             try:
                 target_roi = float(args[4])
             except ValueError:
                 await ctx.send(f"❌ 目標ROI必須是數字，收到: {args[4]}")
                 return
-        
-        # 檢查策略是否存在
-        registry = get_strategy_registry()
-        if strategy not in registry.strategies:
-            available = ", ".join(list(registry.strategies.keys())[:5])
-            embed = discord.Embed(
-                title="❌ 未知策略",
-                description=f"策略 `{strategy}` 不存在\n\n**可用策略**: {available}...",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed)
-            return
-        
-        # 解析時間段
-        try:
-            start_date, end_date = _parse_period_to_dates(period)
-        except ValueError as e:
-            embed = discord.Embed(
-                title="❌ 無效的時間段",
-                description=str(e),
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed)
-            return
-        
-        # 提交訓練任務
-        queue = get_training_queue()
-        task_id = queue.submit_training(
-            user_id=ctx.author.id,
-            strategy=strategy,
-            ticker=ticker,
-            start_date=start_date,
-            end_date=end_date,
-            target_roi=target_roi
-        )
-        
-        embed = discord.Embed(
-            title="📊 訓練任務已提交",
-            color=discord.Color.blue()
-        )
-        embed.add_field(name="任務ID", value=f"`{task_id}`", inline=False)
-        embed.add_field(name="策略", value=strategy, inline=True)
-        embed.add_field(name="股票", value=ticker, inline=True)
-        embed.add_field(name="時間段", value=f"{start_date} ~ {end_date}", inline=True)
-        embed.add_field(name="目標ROI", value=f"{target_roi}%", inline=True)
-        embed.add_field(
-            name="預計等待時間",
-            value="2-10分鐘 (根據參數數量和伺服器負載)",
-            inline=False
-        )
-        embed.set_footer(text="💡 使用 !train-status <task_id> 查看進度")
-        
-        await ctx.send(embed=embed)
-        
+        await _train_do_submit(ctx, strategy, ticker, period, target_roi)
+
     except Exception as e:
         log_error(f"!train 命令失敗: {e}")
         await ctx.send(f"❌ 錯誤: {str(e)}")
@@ -963,7 +1125,10 @@ def _run_walk_forward(ticker):
 async def validate_strategy(ctx, ticker: str = None):
     """P5 walk-forward 驗證：對某股做樣本外回測，揭露策略穩定性/過擬合。"""
     if not ticker:
-        await ctx.send("用法：`!validate 2330`（對該股跑樣本外驗證）")
+        async def _run(tk):
+            await ctx.invoke(validate_strategy, ticker=tk)
+        await ctx.send("🔬 要驗證哪一檔？按下方輸入股票代號：",
+                       view=TickerEntryView(ctx.author.id, _run))
         return
     try:
         await ctx.defer()
