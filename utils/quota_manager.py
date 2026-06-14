@@ -43,8 +43,12 @@ def _base_limit(data, user_str, tier):
 
 def save_quota(data):
     os.makedirs(os.path.dirname(QUOTA_FILE), exist_ok=True)
-    with open(QUOTA_FILE, "w") as f:
+    # 原子寫：先寫暫存檔再 os.replace，避免寫到一半被中斷導致 user_quota.json 損毀，
+    # 進而被 load_quota 的 except 當成重置 → 全站額度/加值一次蒸發。
+    tmp = QUOTA_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(data, f, indent=4)
+    os.replace(tmp, QUOTA_FILE)
 
 def check_quota_status(user_id, tier='free'):
     """

@@ -131,7 +131,8 @@ def run_backtest_by_period(strategy_cls, df: pd.DataFrame, period_name: str,
         # Sharpe比率和最大回撤
         drawdown_analysis = strat.analyzers.drawdown.get_analysis()
         max_dd = abs(drawdown_analysis.get('max', {}).get('drawdown', 0.0))
-        sharpe_approx = roi / max(max_dd, 0.01) if max_dd > 0 else roi * 10
+        # 報酬/最大回撤 比值(非真 Sharpe)，夾在 [-10,10] 避免 max_dd 趨近 0 時噴荒謬值。
+        sharpe_approx = max(-10.0, min(10.0, roi / max(max_dd, 0.01)))
         
         # 获取交易列表
         trades_list = []

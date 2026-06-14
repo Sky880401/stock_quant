@@ -110,8 +110,9 @@ def run_backtest(strategy_cls, df, **kwargs):
         drawdown_analysis = strat.analyzers.drawdown.get_analysis()
         max_dd = abs(drawdown_analysis.get('max', {}).get('drawdown', 0.0))
         
-        # Sharpe簡化計算: ROI / max_dd (高過簡化，但快速)
-        sharpe_approx = roi / max(max_dd, 0.01) if max_dd > 0 else roi * 10
+        # 報酬/最大回撤 比值(Calmar 類，非真 Sharpe)。夾在 [-10,10]：max_dd 趨近 0 時
+        # 原式會噴出 roi*10/roi*100 之類荒謬大值，污染下游選參數分數(training_queue 用 sharpe 加權選參)。
+        sharpe_approx = max(-10.0, min(10.0, roi / max(max_dd, 0.01)))
         
         return roi, win_rate, total_trades, avg_win_ratio, avg_loss_pnl, max_dd, sharpe_approx, rtot
     except: 

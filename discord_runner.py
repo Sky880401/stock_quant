@@ -527,11 +527,11 @@ def _diagnose_training_result(results: dict) -> tuple:
     
     # 檢查Sharpe比率
     if sharpe == 0.0:
-        issues.append("❌ Sharpe比率為0 (無風險調整收益)")
+        issues.append("❌ 報酬/回撤比為0 (非真Sharpe)")
         if status != "❌ 嚴重異常" and status != "⚠️ 需要改進":
             status = "⚠️ 需要改進"
     elif sharpe < 0.5:
-        issues.append(f"⚠️ Sharpe比率低 ({sharpe:.2f})")
+        issues.append(f"⚠️ 報酬/回撤比低 ({sharpe:.2f}，非真Sharpe)")
         if status != "❌ 嚴重異常":
             status = "⚠️ 需要改進"
         recommendations.append("✓ 提高風險調整後收益，增加穩定性")
@@ -1054,7 +1054,7 @@ async def check_training_status(ctx, task_id: str = None):
                 value=(
                     f"**ROI**: {results['best_roi']:.2f}%\n"
                     f"**勝率**: {results['best_win_rate']:.1f}%\n"
-                    f"**Sharpe**: {results['best_sharpe']:.2f}\n"
+                    f"**報酬/回撤比**: {results['best_sharpe']:.2f}（非真Sharpe,僅參考）\n"
                     f"**最大回撤**: {results['best_max_dd']:.2f}%"
                 ),
                 inline=False

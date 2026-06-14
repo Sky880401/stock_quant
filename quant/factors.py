@@ -23,9 +23,14 @@ def build_factor_timeseries(panel: dict) -> dict:
         close = df["Close"].astype(float)
         vol = df["Volume"].astype(float)
         inst_net = (df["Foreign"].fillna(0) + df["Trust"].fillna(0)).astype(float)
+        # 法人健全檢查不可信的日子(成交量>0卻法人全0/NaN=資料來源故障)其真實淨買未知，
+        # 不能當成「淨買 0」算進集中度→設為 NaN，rolling 用 min_periods 只彙總可信日；
+        # 若 20 日窗內可信日不足 15 天，inst 直接 NaN(該股當期會被排除)。
+        if "inst_unreliable" in df.columns:
+            inst_net = inst_net.mask(df["inst_unreliable"].fillna(False).astype(bool))
 
         mom = close.shift(21) / close.shift(252) - 1.0
-        inst = inst_net.rolling(20).sum() / vol.rolling(20).sum().replace(0, np.nan)
+        inst = inst_net.rolling(20, min_periods=15).sum() / vol.rolling(20).sum().replace(0, np.nan)
         lowvol = -close.pct_change().rolling(60).std()
         dollar_vol = (close * vol).rolling(20).mean()
 
@@ -42,6 +47,10 @@ def build_factor_timeseries(panel: dict) -> dict:
 
 
 FACTOR_COLS = ["mom", "revyoy", "inst", "lowvol"]
+
+# 陳舊防護：再平衡日找不到該股當日資料時，往前取最後一筆；但若這筆離再平衡日超過
+# STALE_DAYS 天(停牌/長期不流動)，視為太舊→該股當期不納入，避免用陳舊因子配未來報酬。
+STALE_DAYS = 14
 
 
 def _zscore(s: pd.Series) -> pd.Series:
@@ -64,6 +73,8 @@ def cross_section_scores(fts: dict, date, min_liquidity=2e7, weights=None):
             # 取 <= date 的最後一筆（再平衡日未必每檔都有交易）
             sub = f.loc[:date]
             if len(sub) == 0:
+                continue
+            if (pd.Timestamp(date) - sub.index[-1]).days > STALE_DAYS:
                 continue
             row = sub.iloc[-1]
         else:
@@ -88,6 +99,8 @@ def cross_section_table(fts: dict, date, min_liquidity=2e7, weights=None):
     for sid, f in fts.items():
         sub = f.loc[:date]
         if len(sub) == 0:
+            continue
+        if (pd.Timestamp(date) - sub.index[-1]).days > STALE_DAYS:
             continue
         row = sub.iloc[-1]
         if row[FACTOR_COLS].isna().any() or pd.isna(row["dollar_vol"]) or row["dollar_vol"] < min_liquidity:
