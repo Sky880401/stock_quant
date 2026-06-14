@@ -87,15 +87,23 @@ class ConfirmView(discord.ui.View):
 RANK_PUSH_TIME_UTC = time(hour=9, minute=30, tzinfo=timezone.utc)
 RANK_PUSH_N = 8
 
+
+def _default_push_channel_id():
+    """每日排行自動推播頻道：讀 .env 的 RANK_PUSH_CHANNEL_ID(持久化，重啟不掉)。!bind 可在執行期覆蓋。"""
+    raw = (os.getenv("RANK_PUSH_CHANNEL_ID") or "").strip()
+    return int(raw) if raw.isdigit() else None
+
+
 class QuantBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
-        self.target_channel_id = None
+        self.target_channel_id = _default_push_channel_id()
 
     async def on_ready(self):
         log_info(f"🤖 BMO V10.1 (BETA Role + Format) 上線: {self.user.name}")
+        log_info(f"📌 每日排行自動推播頻道: {self.target_channel_id or '未設定 (請在 .env 設 RANK_PUSH_CHANNEL_ID 或於頻道用 !bind)'}")
         await asyncio.to_thread(load_stock_map)
         _register_training_notifier()
         if not self.daily_scan_task.is_running():
