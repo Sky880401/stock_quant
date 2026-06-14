@@ -30,8 +30,13 @@ def _direction(action: str) -> str:
 
 def _conn():
     os.makedirs(DB_PATH.parent, exist_ok=True)
-    con = sqlite3.connect(DB_PATH)
+    # predictions.db 會被 event loop 執行緒(log_prediction)與 to_thread worker
+    # (backfill/seed/accuracy)同時存取。busy_timeout 讓鎖競爭時等待而非立刻 'database is locked'；
+    # WAL 讓讀寫不互卡；check_same_thread=False 因每次都開短命連線、用完即關，安全。
+    con = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
     con.row_factory = sqlite3.Row
+    con.execute("PRAGMA busy_timeout=30000")
+    con.execute("PRAGMA journal_mode=WAL")
     return con
 
 
@@ -129,34 +134,40 @@ def backfill_matured(price_func):
     """
     init_db()
     today = datetime.now().strftime("%Y-%m-%d")
-    closed = checked = 0
+    checked = 0
+    # 1) 先在短交易內取出待回填列、立刻關閉連線（不要在抓網路股價時抱著寫鎖）
     with _conn() as con:
         rows = con.execute(
             "SELECT * FROM predictions WHERE status='open' AND due_date<=?", (today,)
         ).fetchall()
-        for r in rows:
-            checked += 1
-            try:
-                price = price_func(r["ticker"])
-            except Exception:
-                price = None
-            if not price or not r["entry_price"]:
-                continue
-            ret = (price - r["entry_price"]) / r["entry_price"] * 100.0
-            if r["direction"] == "long":
-                correct = 1 if ret > 0 else 0
-            elif r["direction"] == "short":
-                correct = 1 if ret < 0 else 0
-            else:
-                continue
-            con.execute(
+    # 2) 抓價(會打網路、很慢)在資料庫交易之外進行
+    updates = []
+    for r in rows:
+        checked += 1
+        try:
+            price = price_func(r["ticker"])
+        except Exception:
+            price = None
+        if not price or not r["entry_price"]:
+            continue
+        ret = (price - r["entry_price"]) / r["entry_price"] * 100.0
+        if r["direction"] == "long":
+            correct = 1 if ret > 0 else 0
+        elif r["direction"] == "short":
+            correct = 1 if ret < 0 else 0
+        else:
+            continue
+        updates.append((round(price, 2), round(ret, 2), correct, r["id"]))
+    # 3) 一次性批次寫回（短交易）
+    if updates:
+        with _conn() as con:
+            con.executemany(
                 """UPDATE predictions
                    SET actual_price=?, actual_return=?, correct=?, status='closed'
                    WHERE id=?""",
-                (round(price, 2), round(ret, 2), correct, r["id"]),
+                updates,
             )
-            closed += 1
-    return closed, checked
+    return len(updates), checked
 
 
 def accuracy_summary():

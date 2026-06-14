@@ -345,8 +345,11 @@ def build_panel(universe=None, use_cache=True, max_age_hours=12,
                 panel[sid] = fr
         except Exception:
             continue
-    with open(path, "wb") as f:
-        pickle.dump(panel, f)
+    # 只在 panel 非空時才寫快取：避免某次抓取全失敗(空 panel)被快取，
+    # 之後 max_age_hours 內持續回傳空結果(選股/回測拿到空資料卻不報錯)。
+    if panel:
+        with open(path, "wb") as f:
+            pickle.dump(panel, f)
     return panel
 
 

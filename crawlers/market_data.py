@@ -8,6 +8,26 @@ from datetime import datetime, timedelta
 
 from crawlers.news_scraper import fetch_yahoo_news
 
+
+# 單例 FinMind DataLoader：原本 margin_trend 每次都新建 DataLoader 並重新 login_by_token，
+# 累積連線池造成洩漏。改為全程重用、只登入一次。
+_DL = None
+
+
+def _get_loader():
+    global _DL
+    if _DL is None:
+        import os as _os
+        from FinMind.data import DataLoader
+        _DL = DataLoader()
+        tok = _os.getenv("FINMIND_TOKEN")
+        if tok:
+            try:
+                _DL.login_by_token(api_token=tok)
+            except Exception:
+                pass
+    return _DL
+
 # 中文財經情緒詞典（標題層級夠用；命中即計數）
 _POS = ["漲", "大漲", "飆", "創新高", "新高", "看好", "買超", "利多", "樂觀", "成長",
         "獲利", "突破", "強勢", "上調", "調高", "訂單", "旺", "受惠", "回升", "反彈",
@@ -53,13 +73,7 @@ def margin_trend(stock_id: str, days: int = 20) -> dict:
     if not clean.isdigit():
         return {"status": "N/A", "reason": "非台股代號", "score": 0}
     try:
-        import os as _os
-        from FinMind.data import DataLoader
-        dl = DataLoader()
-        tok = _os.getenv("FINMIND_TOKEN")
-        if tok:
-            try: dl.login_by_token(api_token=tok)
-            except Exception: pass
+        dl = _get_loader()
         start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
         end = datetime.now().strftime("%Y-%m-%d")
         df = dl.taiwan_stock_margin_purchase_short_sale(

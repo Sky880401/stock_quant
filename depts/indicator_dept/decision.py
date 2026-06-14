@@ -28,6 +28,10 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
         if pd.notna(_rsi_smooth):
             rsi_eff = float(_rsi_smooth)
     atr = calculate_atr(df)
+    # ATR 可能為 NaN（High/Low 有缺值時 rolling 均值為 NaN），會讓 atr_pct、停損價一路變成 nan
+    # 顯示給使用者。退回「現價 3%」當保守波動估計，與 calculate_atr 例外分支的 fallback 一致。
+    if pd.isna(atr):
+        atr = current_price * 0.03
     atr_pct = (atr / current_price) * 100
 
     log_info(f"Mode: {strategy_type} | Tech:{tech_signal} RSI:{rsi_val:.1f} ATR:{atr_pct:.1f}%")

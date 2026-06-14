@@ -123,7 +123,17 @@ class YFinanceProvider(DataProvider):
             }
         except: return {}
 
+# 單例快取：FinMindProvider.__init__ 會做 login_by_token(網路)且內含 requests session，
+# 每次查詢都新建會累積連線池→記憶體洩漏。快取後全程重用、只登入一次。
+_PROVIDER_CACHE = {}
+
+
 def get_data_provider(source_name: str = 'finmind') -> DataProvider:
-    if source_name.lower() == 'finmind': return FinMindProvider()
-    elif source_name.lower() == 'yfinance': return YFinanceProvider()
-    else: raise ValueError(f"Unknown source: {source_name}")
+    key = source_name.lower()
+    prov = _PROVIDER_CACHE.get(key)
+    if prov is None:
+        if key == 'finmind': prov = FinMindProvider()
+        elif key == 'yfinance': prov = YFinanceProvider()
+        else: raise ValueError(f"Unknown source: {source_name}")
+        _PROVIDER_CACHE[key] = prov
+    return prov

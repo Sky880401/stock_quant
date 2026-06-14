@@ -7,8 +7,10 @@ import time
 import glob
 import matplotlib.font_manager as fm
 
-# 字型設定
-FONT_PATH = "/root/stock_quant/utils/fonts/wqy-microhei.ttc"
+# 字型設定：路徑相對於本檔，避免寫死 /root 在非 /root 部署(如開發機 /home/dev)找不到字型。
+# my_font 預設 None：字型不存在時走 else，後面 suptitle 用 fontproperties=None(等同預設)不會再 NameError。
+FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "wqy-microhei.ttc")
+my_font = None
 if os.path.exists(FONT_PATH):
     fm.fontManager.addfont(FONT_PATH)
     my_font = fm.FontProperties(fname=FONT_PATH)
@@ -60,11 +62,19 @@ def generate_stock_chart(ticker, df, strategy_params=None, output_dir="reports")
             rc={'font.family': font_name, 'axes.unicode_minus': False}
         )
         
+        # 只畫「至少有一個有效值」的均線：歷史不足 240 根時 MA240 整欄 NaN，
+        # 全 NaN 的 addplot 會讓 mplfinance 丟 'zero-size array' 例外、整張圖出不來
+        # （小型股/新股常見）。逐條過濾後才安全。
+        _ma_specs = [
+            ('MA5', 'magenta', 1.0, 'MA5 (W)'),
+            ('MA20', 'orange', 1.2, 'MA20 (M)'),
+            ('MA60', 'green', 1.5, 'MA60 (Q)'),
+            ('MA240', 'blue', 1.5, 'MA240 (Y)'),
+        ]
         ap = [
-            mpf.make_addplot(plot_df['MA5'], color='magenta', width=1.0, label='MA5 (W)'),
-            mpf.make_addplot(plot_df['MA20'], color='orange', width=1.2, label='MA20 (M)'),
-            mpf.make_addplot(plot_df['MA60'], color='green', width=1.5, label='MA60 (Q)'),
-            mpf.make_addplot(plot_df['MA240'], color='blue', width=1.5, label='MA240 (Y)')
+            mpf.make_addplot(plot_df[col], color=color, width=width, label=label)
+            for col, color, width, label in _ma_specs
+            if plot_df[col].notna().any()
         ]
         
         panel_ratios = (3, 1)
@@ -99,12 +109,14 @@ def generate_stock_chart(ticker, df, strategy_params=None, output_dir="reports")
         fig.tight_layout(rect=[0, 0, 1, 0.94])
         
         fig.savefig(output_path, dpi=100)
-        matplotlib.pyplot.close(fig)
-        
+
         # [新增] 執行自動清理 (保留最新 100 張)
         cleanup_old_charts(output_dir, max_files=100)
-        
+
         return output_path
     except Exception as e:
         print(f"❌ Plot Error: {e}")
         return None
+    finally:
+        # 不論成功或例外都關閉所有 figure，避免 mplfinance 多 panel 殘留 figure 造成記憶體洩漏
+        matplotlib.pyplot.close('all')

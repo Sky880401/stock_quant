@@ -14,6 +14,12 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 load_dotenv(dotenv_path=Path(PROJECT_ROOT) / '.env', override=True)
 
+# 全域 socket 逾時：FinMind/yfinance/requests 等同步阻塞式網路呼叫多數沒帶 timeout，
+# 一旦對端 hang 住會永久卡住工作執行緒(正式機曾因此整個 event loop 凍死)。
+# 設一個上限讓它們最終會拋錯而非無限等待；discord 的 gateway 走 aiohttp 非阻塞，不受影響。
+import socket as _socket
+_socket.setdefaulttimeout(45)
+
 from main import analyze_single_target, generate_moltbot_prompt, get_stock_name_zh, TARGET_STOCKS, fetch_stock_data_smart
 from ai_runner import generate_insight
 from utils.model_config import get_model, set_model, AVAILABLE_MODELS
@@ -106,7 +112,7 @@ def _sd_notify(state):
         with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
             sock.connect(addr)
             sock.sendall(state.encode())
-    except OSError:
+    except Exception:
         pass
 
 
@@ -133,8 +139,12 @@ class QuantBot(commands.Bot):
 
     @tasks.loop(seconds=60)
     async def _watchdog_heartbeat(self):
-        # systemd 看門狗心跳：event loop 卡死時此 task 停擺→WATCHDOG 逾時→自動重啟
-        _sd_notify("WATCHDOG=1")
+        # systemd 看門狗心跳：event loop 卡死時此 task 停擺→WATCHDOG 逾時→自動重啟。
+        # 本體永不可拋例外，否則 tasks.loop 會永久停止、心跳斷掉造成 systemd 誤判卡死而重啟。
+        try:
+            _sd_notify("WATCHDOG=1")
+        except Exception:
+            pass
 
     @tasks.loop(time=RANK_PUSH_TIME_UTC)
     async def daily_rank_task(self):
@@ -242,8 +252,10 @@ async def analyze_stock(ctx, ticker: str = None):
     user_id = ctx.author.id
     
     # [修改] 身分組判斷邏輯
-    is_admin = ctx.author.guild_permissions.administrator
-    user_roles = [role.name for role in ctx.author.roles]
+    # DM(私訊)中 ctx.author 是 User 而非 Member，沒有 guild_permissions / roles，
+    # 直接存取會丟 AttributeError 且使用者收不到任何回覆 → 用 getattr 安全取值。
+    is_admin = getattr(getattr(ctx.author, "guild_permissions", None), "administrator", False)
+    user_roles = [role.name for role in getattr(ctx.author, "roles", [])]
     
     tier = 'free'
     if any(r in ['Premium', 'VIP'] for r in user_roles):
@@ -283,15 +295,23 @@ async def analyze_stock(ctx, ticker: str = None):
             record_user_query(ctx.author.name, data['meta']['ticker'], data['meta']['name'], dec['action'], dec['final_confidence'], roi)
 
             # P1 預測日誌：存下這次判斷，等 N 日後回填實際結果算命中率
+            # 走 to_thread：log_prediction 是同步 SQLite I/O，直接在 event loop 上跑會在
+            # DB 被鎖時阻塞整個 bot。
             strat_type = (data.get('backtest_insight') or {}).get('strategy_type', 'N/A')
-            log_prediction(
-                ticker=data['meta']['ticker'], name=data['meta']['name'],
-                action=dec['action'], confidence=dec.get('final_confidence'),
-                strategy=strat_type, entry_price=data['price_data']['latest_close'],
+            await asyncio.to_thread(
+                log_prediction,
+                data['meta']['ticker'], data['meta']['name'], dec['action'],
+                dec.get('final_confidence'), strat_type,
+                data['price_data']['latest_close'],
             )
 
             prompt = generate_moltbot_prompt(data, is_single=True)
-            ai_response = await asyncio.to_thread(generate_insight, prompt)
+            # 加逾時保護：上游 LLM 若 hang 住，至少讓使用者拿到逾時訊息、釋放等待。
+            try:
+                ai_response = await asyncio.wait_for(
+                    asyncio.to_thread(generate_insight, prompt), timeout=150)
+            except asyncio.TimeoutError:
+                ai_response = "❌ AI 分析逾時（150 秒），請稍後再試。"
             
             final_name = data['meta']['name']
             

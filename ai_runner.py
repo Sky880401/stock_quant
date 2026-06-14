@@ -11,20 +11,30 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 env_path = Path(PROJECT_ROOT) / '.env'
 load_dotenv(dotenv_path=env_path, override=True)
 
+# 依模型快取 client，避免每次查詢都新建 ChatNVIDIA(底層 httpx 連線池)造成記憶體/連線洩漏。
+# !model 切換時會用不同 key 取得對應 client；數量有界(可用模型數)。
+_CLIENT_CACHE = {}
+
+
 def get_nvidia_client():
-    """初始化 NVIDIA 客戶端（模型由 !model 指令切換，預設 Llama 3.3 70B）"""
+    """初始化 NVIDIA 客戶端（模型由 !model 指令切換，預設 Llama 3.3 70B）。同模型重用同一 client。"""
     api_key = os.getenv("NVIDIA_API_KEY")
     if not api_key:
         print("❌ Error: NVIDIA_API_KEY missing.")
         return None
 
-    return ChatNVIDIA(
-        model=get_model(),
-        api_key=api_key,
-        temperature=0.2,
-        top_p=0.7,
-        max_tokens=4096
-    )
+    model = get_model()
+    client = _CLIENT_CACHE.get(model)
+    if client is None:
+        client = ChatNVIDIA(
+            model=model,
+            api_key=api_key,
+            temperature=0.2,
+            top_p=0.7,
+            max_tokens=4096
+        )
+        _CLIENT_CACHE[model] = client
+    return client
 
 def generate_insight(prompt_content: str) -> str:
     """

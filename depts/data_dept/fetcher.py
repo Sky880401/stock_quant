@@ -4,6 +4,19 @@ from utils.logger import log_info
 from depts.config import PRIMARY_SOURCE, FALLBACK_SOURCE
 
 
+# 全市場股票清單只抓一次並快取：原本每次 get_stock_name_zh 都 new DataLoader 並整批下載
+# taiwan_stock_info()，既洩漏連線又浪費頻寬。
+_STOCK_INFO_DF = None
+
+
+def _stock_info_df():
+    global _STOCK_INFO_DF
+    if _STOCK_INFO_DF is None:
+        from FinMind.data import DataLoader
+        _STOCK_INFO_DF = DataLoader().taiwan_stock_info()
+    return _STOCK_INFO_DF
+
+
 def get_stock_name_zh(stock_id: str) -> str:
     clean_id = stock_id.split('.')[0]
     if not clean_id.isdigit():
@@ -18,11 +31,10 @@ def get_stock_name_zh(stock_id: str) -> str:
             pass
         return clean_id
     try:
-        from FinMind.data import DataLoader
-        dl = DataLoader()
-        df = dl.taiwan_stock_info()
-        row = df[df['stock_id'] == clean_id]
-        if not row.empty: return row.iloc[0]['stock_name']
+        df = _stock_info_df()
+        if df is not None:
+            row = df[df['stock_id'] == clean_id]
+            if not row.empty: return row.iloc[0]['stock_name']
     except: pass
     return clean_id
 
