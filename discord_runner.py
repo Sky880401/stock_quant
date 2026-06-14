@@ -94,6 +94,22 @@ def _default_push_channel_id():
     return int(raw) if raw.isdigit() else None
 
 
+def _sd_notify(state):
+    """systemd sd_notify(無第三方依賴，直接寫 $NOTIFY_SOCKET)。非 notify 模式下 socket 不存在→no-op。"""
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return
+    import socket
+    if addr.startswith("@"):
+        addr = "\0" + addr[1:]
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.connect(addr)
+            sock.sendall(state.encode())
+    except OSError:
+        pass
+
+
 class QuantBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -104,12 +120,21 @@ class QuantBot(commands.Bot):
     async def on_ready(self):
         log_info(f"🤖 BMO V10.1 (BETA Role + Format) 上線: {self.user.name}")
         log_info(f"📌 每日排行自動推播頻道: {self.target_channel_id or '未設定 (請在 .env 設 RANK_PUSH_CHANNEL_ID 或於頻道用 !bind)'}")
+        _sd_notify("READY=1")  # 連上 gateway 立即回報 ready，避免 Type=notify 啟動逾時
+        if not self._watchdog_heartbeat.is_running():
+            self._watchdog_heartbeat.start()
+        _sd_notify("WATCHDOG=1")
         await asyncio.to_thread(load_stock_map)
         _register_training_notifier()
         if not self.daily_scan_task.is_running():
             self.daily_scan_task.start()
         if not self.daily_rank_task.is_running():
             self.daily_rank_task.start()
+
+    @tasks.loop(seconds=60)
+    async def _watchdog_heartbeat(self):
+        # systemd 看門狗心跳：event loop 卡死時此 task 停擺→WATCHDOG 逾時→自動重啟
+        _sd_notify("WATCHDOG=1")
 
     @tasks.loop(time=RANK_PUSH_TIME_UTC)
     async def daily_rank_task(self):
