@@ -34,6 +34,17 @@ from utils.period_backtest import load_period_results, get_predefined_periods
 STOCK_MAP = {}
 def load_stock_map():
     global STOCK_MAP
+    # 先用本地股名快取(data/stock_names.json),不靠會限流的 FinMind
+    try:
+        from depts.data_dept.fetcher import _name_map
+        nm = _name_map()
+        if nm:
+            for code, name in nm.items():
+                STOCK_MAP[name] = code
+            print(f"✅ Stock map loaded (local cache): {len(STOCK_MAP)} entries.")
+            return
+    except Exception as e:
+        print(f"⚠️ local name map 失敗,改用 FinMind: {e}")
     try:
         print("📥 Loading stock list from FinMind...")
         from FinMind.data import DataLoader

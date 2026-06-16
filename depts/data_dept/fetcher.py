@@ -8,17 +8,42 @@ from depts.config import PRIMARY_SOURCE, FALLBACK_SOURCE
 # taiwan_stock_info()，既洩漏連線又浪費頻寬。
 _STOCK_INFO_DF = None
 
+# 本地股名快取(data/stock_names.json, code->name):股名查詢優先讀這裡,不靠會限流的
+# FinMind taiwan_stock_info()。FinMind 限流時股名也不會退回代號。
+import os as _os
+import json as _json
+_NAME_MAP = None
+_NAME_MAP_PATH = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))), "data", "stock_names.json")
+
+
+def _name_map():
+    global _NAME_MAP
+    if _NAME_MAP is None:
+        try:
+            with open(_NAME_MAP_PATH, encoding="utf-8") as f:
+                _NAME_MAP = _json.load(f)
+        except Exception:
+            _NAME_MAP = {}
+    return _NAME_MAP
+
 
 def _stock_info_df():
     global _STOCK_INFO_DF
     if _STOCK_INFO_DF is None:
         from FinMind.data import DataLoader
-        _STOCK_INFO_DF = DataLoader().taiwan_stock_info()
+        df = DataLoader().taiwan_stock_info()
+        if df is not None and not df.empty:
+            _STOCK_INFO_DF = df
+        else:
+            return df
     return _STOCK_INFO_DF
 
 
 def get_stock_name_zh(stock_id: str) -> str:
     clean_id = stock_id.split('.')[0]
+    _nm = _name_map().get(clean_id)  # 本地股名快取優先,不靠 FinMind 限流
+    if _nm:
+        return _nm
     if not clean_id.isdigit():
         # 非台股代號（含美股）→ 用 yfinance 取公司全名；失敗就回代號本身
         try:
