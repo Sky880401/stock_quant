@@ -66,6 +66,15 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
     except Exception:
         p4_mult, p4_src = 1.0, "預設"
 
+    # [新增] 勝率<50% 的策略=比擲硬幣還差,其技術訊號不可信→技術話語權歸零,不讓它驅動買賣。
+    # win_rate 為 0-100 百分比;0/None=無回測不判斷,只在「已知且<50」時壓低。
+    low_winrate = isinstance(win_rate, (int, float)) and 0 < win_rate < 50
+    low_winrate_note = None
+    if low_winrate:
+        tech_weight = 0.0
+        low_winrate_note = (f"策略「{strategy_type}」回測勝率僅 {win_rate}%(不到一半),"
+                            f"其技術訊號已不納入計分,本建議改以籌碼/基本面/機率分佈為主。")
+
     # [策略計分區塊 - 動態權重版本]
     score_before_tech = score  # 記錄技術面計分前的分數，供 RSI 閘門削減用
     if strategy_type == "Reversion (RSI)":
@@ -240,5 +249,6 @@ def calculate_final_decision(tech_res, fund_res, chip_res, bollinger_res, kd_res
         "stop_loss_price": round(key_level_price, 2),
         "stop_loss_desc": key_level_desc,
         "atr_pct": round(atr_pct, 1),
-        "win_rate": win_rate
+        "win_rate": win_rate,
+        "low_winrate_note": low_winrate_note
     }

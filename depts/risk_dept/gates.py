@@ -37,10 +37,17 @@ def apply_stat_conflict_note(decision, profit_space):
             downside = abs(ps.get("downside") or 0)
             if prob_up is not None and exp_ret is not None \
                and prob_up >= 60 and exp_ret >= 0.4 * downside:
-                decision["stat_conflict_note"] = (
-                    f"訊號分歧:技術/籌碼面給出 {act},但該股歷史20日報酬分佈偏多"
-                    f"(上漲機率 {prob_up}%、期望報酬 {exp_ret}%)。本系統以風險控制優先、"
-                    f"維持原建議,但此背離須如實揭露,請自行權衡。")
+                note = (f"訊號分歧:技術/籌碼面給出 {act},但該股歷史20日報酬分佈偏多"
+                        f"(上漲機率 {prob_up}%、期望報酬 {exp_ret}%)。")
+                # 上漲機率強烈偏多(>=65%)→不再硬留賣出/減碼與自家多頭預測打架,降級為觀望
+                # (仍不翻成 BUY,維持不對稱:錯誤BUY賠真錢、錯誤觀望只少賺)
+                if prob_up >= 65:
+                    decision["action"] = "HOLD (Neutral)"
+                    decision["position_size"] = "0-2% (訊號分歧,降級觀望)"
+                    note += "因上漲機率偏高,已將原賣出/減碼降級為觀望(不轉為買進),請自行權衡。"
+                else:
+                    note += "本系統以風險控制優先、維持原建議,但此背離須如實揭露,請自行權衡。"
+                decision["stat_conflict_note"] = note
     except Exception:
         pass
 

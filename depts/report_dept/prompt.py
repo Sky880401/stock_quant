@@ -68,6 +68,7 @@ def generate_moltbot_prompt(data, is_single=False):
    - 分析目前技術面多空。
    - 若 final_decision 含 risk_reward_downgrade 欄位,**必須**完整引用該欄位內容,解釋為何降級。
    - 若 final_decision 含 stat_conflict_note 欄位,**必須**在決策邏輯中如實呈現該分歧說明,不得淡化。
+   - 若 final_decision 含 low_winrate_note 欄位,**必須**如實說明「該策略勝率不足、技術訊號已不採信」,別假裝技術面有效。
    - 若 final_decision 含 position_cap_note 欄位,**必須**在風險管理段引用該說明,解釋倉位為何被壓低。
 3. **💰 獲利空間 (機率化)**:
    - 根據 profit_space 欄位說明：持有約 N 交易日的上漲機率、期望報酬、目標價區間(target_low~target_high)、下檔風險。

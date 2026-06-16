@@ -319,7 +319,8 @@ async def analyze_stock(ctx, ticker: str = None):
             raw_price = data['price_data']['latest_close']
             current_price = f"{raw_price:.2f}"
             
-            header = f"📊 **BMO 深度診斷: {final_name}** | **現價: {current_price}**"
+            header = (f"📊 **BMO 深度診斷: {final_name}** | **現價: {current_price}**\n"
+                      f"⚠️ _單股方向預測無穩定 edge、倉位建議僅供參考；要找買點請用 `!rank` 看橫截面選股排行_")
             
             files = []
             if data.get('chart_path') and os.path.exists(data['chart_path']):
