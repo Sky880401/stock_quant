@@ -59,6 +59,16 @@ MANIFEST_SCHEMA_VERSION = "1.0"
 # generated_at 容許的未來時鐘偏移（跨機時鐘不同步時的緩衝）。
 DEFAULT_FUTURE_SKEW = timedelta(minutes=5)
 
+# --- 路徑/檔名約定（供 cron / shell wrapper 與下游核對，避免散落各處硬編字串）---
+# 真實接線時，#106 producer 會把成品寫到 <base>/<YYYY-MM-DD>/106_preferred.json，
+# #201 relay 會把備援寫到 <base>/<YYYY-MM-DD>/201_fallback.json，
+# 本模組讀這兩個槽位、驗證、挑一份寫到 delivery/ 底下。
+PREFERRED_106_FILENAME = "106_preferred.json"
+FALLBACK_201_FILENAME = "201_fallback.json"
+DELIVERY_FILENAME = "institutional_daily_report.json"
+MANIFEST_FILENAME = "delivery_manifest.json"
+DELIVERY_SUBDIR = "delivery"
+
 
 class ReportValidationError(ValueError):
     """法人日報 contract/schema/health/freshness 驗證失敗。"""
@@ -122,6 +132,32 @@ def build_preferred_106_payload(
         "data_date": _iso_date(data_date),
         "generated_at": _iso_datetime(generated),
         "health": health or {"status": "green", "checks": ["schema", "freshness"]},
+        "rows": row_list,
+    }
+
+
+def build_fallback_201_payload(
+    *,
+    data_date: date | str,
+    rows: Iterable[dict[str, Any]],
+    generated_at: datetime | str | None = None,
+    health: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """模擬 #201 relay 抓取後落地的備援成品。
+
+    與 #106 結構相同（同一份 schema），差別只在 source_job_id="201"，
+    且預設 health 標 yellow（備援來源視為降級但仍可交付），讓 manifest 能誠實
+    反映「這是退場成品」。呼叫端仍可覆寫 health。
+    """
+    generated = generated_at or datetime.now().replace(microsecond=0)
+    row_list = [dict(row) for row in rows]
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "report_type": REPORT_TYPE,
+        "source_job_id": "201",
+        "data_date": _iso_date(data_date),
+        "generated_at": _iso_datetime(generated),
+        "health": health or {"status": "yellow", "checks": ["schema", "freshness"], "degraded": True},
         "rows": row_list,
     }
 
@@ -338,8 +374,8 @@ def deliver_prefer_106_fallback_201(
             "106/201 皆不可交付：" + "; ".join(f"#{name}={msg}" for name, msg in errors.items())
         )
 
-    delivery_payload_path = output_dir / "institutional_daily_report.json"
-    manifest_path = output_dir / "delivery_manifest.json"
+    delivery_payload_path = output_dir / DELIVERY_FILENAME
+    manifest_path = output_dir / MANIFEST_FILENAME
     shutil.copyfile(selected_path, delivery_payload_path)
 
     delivered_within_deadline = check_now.time() <= DELIVERY_DEADLINE
@@ -375,3 +411,200 @@ def deliver_prefer_106_fallback_201(
         health_status=selected_result.health_status,
         delivered_within_deadline=delivered_within_deadline,
     )
+
+
+# ---------------------------------------------------------------------------
+# 整合層：路徑約定 + 交易日參數流 + 可被 cron / shell wrapper 呼叫的入口
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DeliveryPaths:
+    """一個交易日的所有檔案落點（由 base_dir 與 data_date 推導，全程不硬編字串）。"""
+
+    data_date: str
+    data_date_dir: Path
+    preferred_106_path: Path
+    fallback_201_path: Path
+    output_dir: Path
+    delivery_payload_path: Path
+    manifest_path: Path
+
+
+def resolve_expected_trading_date(now: datetime | None = None) -> str:
+    """推導『預期交易日』(YYYY-MM-DD)。
+
+    真實接線注意：這裡只做『往前找最近一個工作日（跳過週末）』的近似，
+    **沒有接台股休市日曆**（國定假日、補班日、颱風假皆未處理）。正式機應改由
+    上游交易日曆覆寫 expected_data_date，而非依賴本函式。回傳值僅作為
+    『呼叫端沒指定 expected_data_date 時』的保守預設。
+    """
+    current = now or datetime.now()
+    d = current.date()
+    # 週六(5)/週日(6) 往前退到週五。
+    while d.weekday() >= 5:
+        d = d - timedelta(days=1)
+    return d.isoformat()
+
+
+def build_delivery_paths(base_dir: str | Path, data_date: date | str) -> DeliveryPaths:
+    """由 base_dir 與交易日推導標準落點：
+
+        <base>/<YYYY-MM-DD>/106_preferred.json     ← #106 producer 產出（17:30）
+        <base>/<YYYY-MM-DD>/201_fallback.json       ← #201 relay 抓取（17:45）
+        <base>/<YYYY-MM-DD>/delivery/institutional_daily_report.json
+        <base>/<YYYY-MM-DD>/delivery/delivery_manifest.json
+    """
+    base = _coerce_path(base_dir)
+    date_str = _iso_date(data_date)
+    data_date_dir = base / date_str
+    output_dir = data_date_dir / DELIVERY_SUBDIR
+    return DeliveryPaths(
+        data_date=date_str,
+        data_date_dir=data_date_dir,
+        preferred_106_path=data_date_dir / PREFERRED_106_FILENAME,
+        fallback_201_path=data_date_dir / FALLBACK_201_FILENAME,
+        output_dir=output_dir,
+        delivery_payload_path=output_dir / DELIVERY_FILENAME,
+        manifest_path=output_dir / MANIFEST_FILENAME,
+    )
+
+
+def run_scheduled_delivery(
+    *,
+    base_dir: str | Path,
+    now: datetime | None = None,
+    expected_data_date: date | str | None = None,
+) -> DeliveryDecision:
+    """cron / shell wrapper 的主要入口：依約定路徑讀 #106/#201 兩槽位，驗證並交付。
+
+    相當於 18:00–18:30 那段：
+      1. 用 expected_data_date（或由 now 推導的工作日）決定要讀哪一天的資料夾；
+      2. 從 <base>/<date>/ 讀 106_preferred.json 與 201_fallback.json；
+      3. 走 deliver_prefer_106_fallback_201（prefer #106 / fallback #201）；
+      4. 把成品與 manifest 寫到 <base>/<date>/delivery/。
+
+    不會去產生 #106——產生是 #106 producer 在 17:30 的事，本入口只負責驗證與交付。
+    """
+    check_now = now or datetime.now()
+    target_date = (
+        _iso_date(expected_data_date)
+        if expected_data_date is not None
+        else resolve_expected_trading_date(check_now)
+    )
+    paths = build_delivery_paths(base_dir, target_date)
+
+    missing = [
+        str(p)
+        for p in (paths.preferred_106_path, paths.fallback_201_path)
+        if not p.exists()
+    ]
+    if len(missing) == 2:
+        # 兩個槽位都沒有檔案：通常代表 17:30/17:45 上游都還沒落地。
+        raise ReportValidationError(
+            f"找不到任何來源成品（預期交易日 {target_date}）：{', '.join(missing)}"
+        )
+
+    return deliver_prefer_106_fallback_201(
+        preferred_106_path=paths.preferred_106_path,
+        fallback_201_path=paths.fallback_201_path,
+        output_dir=paths.output_dir,
+        now=check_now,
+        expected_data_date=target_date,
+    )
+
+
+def _build_arg_parser() -> "argparse.ArgumentParser":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="institutional_daily_report",
+        description=(
+            "法人日報 prefer #106 / fallback #201 交付 CLI（#901，僅模擬，不部署 #106）。"
+        ),
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    deliver = sub.add_parser(
+        "deliver",
+        help="給定 106/201 payload 路徑 → 驗證並產出 delivery payload + manifest",
+    )
+    deliver.add_argument("--preferred-106", required=True, help="#106 成品 JSON 路徑")
+    deliver.add_argument("--fallback-201", required=True, help="#201 備援 JSON 路徑")
+    deliver.add_argument("--output-dir", required=True, help="交付物輸出資料夾")
+    deliver.add_argument(
+        "--expected-data-date",
+        default=None,
+        help="預期交易日 YYYY-MM-DD（不指定則用 --now 當天）",
+    )
+    deliver.add_argument(
+        "--now",
+        default=None,
+        help="覆寫現在時刻 ISO-8601（測試/重跑用，不指定則用系統時間）",
+    )
+
+    run = sub.add_parser(
+        "run",
+        help="cron 模式：依路徑約定從 <base>/<date>/ 讀兩槽位並交付",
+    )
+    run.add_argument("--base-dir", required=True, help="資料根目錄（其下為 <YYYY-MM-DD>/）")
+    run.add_argument(
+        "--expected-data-date",
+        default=None,
+        help="預期交易日 YYYY-MM-DD（不指定則由 --now 推導最近工作日）",
+    )
+    run.add_argument("--now", default=None, help="覆寫現在時刻 ISO-8601")
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI 入口。回傳 0=交付成功、2=驗證/路徑錯誤（兩來源皆不可交付等）。"""
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    now = datetime.fromisoformat(args.now) if args.now else None
+
+    try:
+        if args.command == "deliver":
+            decision = deliver_prefer_106_fallback_201(
+                preferred_106_path=args.preferred_106,
+                fallback_201_path=args.fallback_201,
+                output_dir=args.output_dir,
+                now=now,
+                expected_data_date=args.expected_data_date,
+            )
+        elif args.command == "run":
+            decision = run_scheduled_delivery(
+                base_dir=args.base_dir,
+                now=now,
+                expected_data_date=args.expected_data_date,
+            )
+        else:  # pragma: no cover - argparse required=True 已擋
+            parser.error(f"未知指令: {args.command}")
+            return 2
+    except ReportValidationError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        return 2
+
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "selected_source_job_id": decision.selected_source_job_id,
+                "fallback_triggered": decision.fallback_triggered,
+                "selected_data_date": decision.selected_data_date,
+                "health_status": decision.health_status,
+                "delivered_within_deadline": decision.delivered_within_deadline,
+                "delivery_payload_path": decision.delivery_payload_path,
+                "manifest_path": decision.manifest_path,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    raise SystemExit(main(sys.argv[1:]))

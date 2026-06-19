@@ -6,10 +6,19 @@ from pathlib import Path
 
 from depts.delivery_dept.institutional_daily_report import (
     DELIVERY_DEADLINE,
+    DELIVERY_FILENAME,
+    FALLBACK_201_FILENAME,
+    MANIFEST_FILENAME,
+    PREFERRED_106_FILENAME,
     ReportValidationError,
+    build_delivery_paths,
+    build_fallback_201_payload,
     build_preferred_106_payload,
     current_schedule_stage,
     deliver_prefer_106_fallback_201,
+    main,
+    resolve_expected_trading_date,
+    run_scheduled_delivery,
     validate_payload,
     write_payload,
 )
@@ -349,6 +358,143 @@ class InstitutionalDailyReportBlueprintTests(unittest.TestCase):
             )
             self.assertFalse(decision.delivered_within_deadline)
             self.assertGreater(late.time(), DELIVERY_DEADLINE)
+
+
+class IntegrationLayerTests(unittest.TestCase):
+    """整合層：路徑約定 + 交易日參數流 + cron 入口 + CLI。"""
+
+    def setUp(self):
+        self.now = datetime(2026, 6, 19, 18, 5, 0)  # 2026-06-19 是週五
+        self.rows = [
+            {"stock_id": "2330", "foreign": 123456, "trust": 2345, "dealer": -456, "total_balance": 125345},
+        ]
+
+    def _seed_slots(self, base, data_date="2026-06-19", generated_at=None, with_106=True, with_201=True):
+        # generated_at 預設與 data_date 同日 18:05（通過 freshness）。
+        if generated_at is None:
+            d = datetime.fromisoformat(data_date)
+            generated_at = datetime(d.year, d.month, d.day, 18, 5, 0)
+        paths = build_delivery_paths(base, data_date)
+        paths.data_date_dir.mkdir(parents=True, exist_ok=True)
+        if with_106:
+            write_payload(
+                paths.preferred_106_path,
+                build_preferred_106_payload(data_date=data_date, rows=self.rows, generated_at=generated_at),
+            )
+        if with_201:
+            write_payload(
+                paths.fallback_201_path,
+                build_fallback_201_payload(data_date=data_date, rows=self.rows, generated_at=generated_at),
+            )
+        return paths
+
+    def test_build_delivery_paths_convention(self):
+        paths = build_delivery_paths("/data/idr", "2026-06-19")
+        self.assertTrue(str(paths.preferred_106_path).endswith(f"2026-06-19/{PREFERRED_106_FILENAME}"))
+        self.assertTrue(str(paths.fallback_201_path).endswith(f"2026-06-19/{FALLBACK_201_FILENAME}"))
+        self.assertTrue(str(paths.delivery_payload_path).endswith(f"delivery/{DELIVERY_FILENAME}"))
+        self.assertTrue(str(paths.manifest_path).endswith(f"delivery/{MANIFEST_FILENAME}"))
+
+    def test_resolve_expected_trading_date_skips_weekend(self):
+        # 週六 → 退到週五；週日 → 退到週五；平日 → 當天。
+        self.assertEqual(resolve_expected_trading_date(datetime(2026, 6, 20, 18, 5)), "2026-06-19")
+        self.assertEqual(resolve_expected_trading_date(datetime(2026, 6, 21, 18, 5)), "2026-06-19")
+        self.assertEqual(resolve_expected_trading_date(datetime(2026, 6, 19, 18, 5)), "2026-06-19")
+
+    def test_fallback_201_builder_marks_yellow(self):
+        payload = build_fallback_201_payload(data_date="2026-06-19", rows=self.rows, generated_at=self.now)
+        self.assertEqual(payload["source_job_id"], "201")
+        self.assertEqual(payload["health"]["status"], "yellow")
+        result = validate_payload(payload, now=self.now, expected_source_job_id="201")
+        self.assertEqual(result.health_status, "yellow")
+
+    def test_run_scheduled_delivery_prefers_106(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._seed_slots(tmp)
+            decision = run_scheduled_delivery(base_dir=tmp, now=self.now)
+            self.assertEqual(decision.selected_source_job_id, "106")
+            self.assertFalse(decision.fallback_triggered)
+            self.assertTrue(Path(decision.delivery_payload_path).exists())
+            self.assertTrue(Path(decision.manifest_path).exists())
+
+    def test_run_scheduled_delivery_falls_back_when_106_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._seed_slots(tmp, with_106=False)
+            decision = run_scheduled_delivery(base_dir=tmp, now=self.now)
+            self.assertEqual(decision.selected_source_job_id, "201")
+            self.assertTrue(decision.fallback_triggered)
+            self.assertEqual(decision.health_status, "yellow")
+
+    def test_run_scheduled_delivery_uses_expected_data_date(self):
+        # 指定交易日 → 讀對應資料夾，即使與 now.date() 不同。
+        with tempfile.TemporaryDirectory() as tmp:
+            self._seed_slots(tmp, data_date="2026-06-18")
+            saturday = datetime(2026, 6, 20, 18, 5, 0)
+            decision = run_scheduled_delivery(
+                base_dir=tmp, now=saturday, expected_data_date="2026-06-18"
+            )
+            self.assertEqual(decision.selected_data_date, "2026-06-18")
+
+    def test_run_scheduled_delivery_both_missing_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ReportValidationError) as ctx:
+                run_scheduled_delivery(base_dir=tmp, now=self.now)
+            self.assertIn("找不到任何來源成品", str(ctx.exception))
+
+    def test_cli_deliver_returns_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            preferred = root / "106.json"
+            fallback = root / "201.json"
+            output = root / "out"
+            write_payload(
+                preferred,
+                build_preferred_106_payload(data_date="2026-06-19", rows=self.rows, generated_at=self.now),
+            )
+            write_payload(
+                fallback,
+                build_fallback_201_payload(data_date="2026-06-19", rows=self.rows, generated_at=self.now),
+            )
+            code = main([
+                "deliver",
+                "--preferred-106", str(preferred),
+                "--fallback-201", str(fallback),
+                "--output-dir", str(output),
+                "--now", self.now.isoformat(),
+            ])
+            self.assertEqual(code, 0)
+            self.assertTrue((output / DELIVERY_FILENAME).exists())
+            self.assertTrue((output / MANIFEST_FILENAME).exists())
+
+    def test_cli_run_mode_returns_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._seed_slots(tmp)
+            code = main([
+                "run",
+                "--base-dir", tmp,
+                "--expected-data-date", "2026-06-19",
+                "--now", self.now.isoformat(),
+            ])
+            self.assertEqual(code, 0)
+
+    def test_cli_returns_two_when_both_invalid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            preferred = root / "106.json"
+            fallback = root / "201.json"
+            output = root / "out"
+            stale = build_preferred_106_payload(data_date="2026-06-01", rows=self.rows, generated_at=self.now)
+            write_payload(preferred, stale)
+            fb = build_fallback_201_payload(data_date="2026-06-01", rows=self.rows, generated_at=self.now)
+            write_payload(fallback, fb)
+            code = main([
+                "deliver",
+                "--preferred-106", str(preferred),
+                "--fallback-201", str(fallback),
+                "--output-dir", str(output),
+                "--now", self.now.isoformat(),
+            ])
+            self.assertEqual(code, 2)
 
 
 if __name__ == "__main__":
