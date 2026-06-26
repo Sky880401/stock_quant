@@ -217,50 +217,130 @@ def backfill(led, n, closes=None, fts=None, dates=None):
     return led
 
 
+DEFAULT_VERIFICATION_CAPITAL = 100000.0
+
+
+def classify_entries(es):
+    """分線：回填已結算 / 前進已結算 / 前進開倉中。
+    回填筆(kind==backfill_biased)含存活偏誤，永不採計為 edge。
+    前進筆(kind != backfill_biased，含舊資料 kind 為 None 者)才是乾淨前進紀錄。"""
+    bf_closed, fwd_closed, fwd_open = [], [], []
+    for e in es:
+        is_bf = e.get("kind") == "backfill_biased"
+        if e["status"] == "closed":
+            (bf_closed if is_bf else fwd_closed).append(e)
+        elif e["status"] == "open" and not is_bf:
+            fwd_open.append(e)
+    return bf_closed, fwd_closed, fwd_open
+
+
+def group_stats(group):
+    """一組已結算紀錄的摘要。空組回 None。
+    回 dict：n、beat_pct(贏大盤比例%)、mean_excess(平均超額%)、equity_mult(累積組合淨值x)。"""
+    if not group:
+        return None
+    ex = [e["excess_pct"] for e in group]
+    beat = float(np.mean([1.0 if x > 0 else 0.0 for x in ex])) * 100
+    eq = float(np.prod([1 + e["exit_value_return_pct"] / 100 for e in group]))
+    return {"n": len(group), "beat_pct": beat,
+            "mean_excess": float(np.mean(ex)), "equity_mult": eq}
+
+
+def polaris_assessment(fwd_closed, ai_cost_raw, capital=DEFAULT_VERIFICATION_CAPITAL):
+    """北極星成本覆蓋率評估——只採前進已結算樣本，回填筆一律不採計。
+    回 dict，status ∈：
+      "no_cost"        未設定 AI_COST_MONTHLY_TWD → 無法驗證成本覆蓋
+      "no_fwd_closed"  有成本但前進 closed=0 → 覆蓋率不可計算
+      "computed"       有前進 closed → 含 mean_excess/monthly_excess_twd/coverage_pct
+    成本覆蓋率% = 估算月超額金額 / AI 月成本 × 100。"""
+    if not ai_cost_raw:
+        return {"status": "no_cost"}
+    cost = float(ai_cost_raw)
+    if not fwd_closed:
+        return {"status": "no_fwd_closed", "ai_cost": cost}
+    mean_excess = float(np.mean([e["excess_pct"] for e in fwd_closed]))
+    monthly_excess_twd = capital * (mean_excess / 100.0)
+    coverage_pct = (monthly_excess_twd / cost * 100.0) if cost else None
+    return {"status": "computed", "ai_cost": cost, "capital": capital,
+            "n": len(fwd_closed), "mean_excess": mean_excess,
+            "monthly_excess_twd": monthly_excess_twd, "coverage_pct": coverage_pct}
+
+
+def _verification_capital():
+    """假設驗證本金：env STOCK_VERIFICATION_CAPITAL_TWD，預設 100000。"""
+    raw = os.environ.get("STOCK_VERIFICATION_CAPITAL_TWD")
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return DEFAULT_VERIFICATION_CAPITAL
+
+
+def _twd(x):
+    return format(int(round(x)), ",")
+
+
+def _print_closed_lines(group):
+    for e in group:
+        print("   ── 第%d筆 基準日%s 出場%s 組合%+.2f%% 大盤%+.2f%% 超額%+.2f%%"
+              % (e["entry_no"], e["as_of_data"], e["exit_date"],
+                 e["exit_value_return_pct"], e["benchmark_return_pct"], e["excess_pct"]))
+
+
 def show(led):
     es = led["entries"]
+    bf_closed, fwd_closed, fwd_open = classify_entries(es)
     print("策略：%s ｜基準：%s ｜成本(來回)%.3f%% ｜共 %d 筆"
           % (led["strategy"], led["benchmark"], led.get("cost_round_trip", RT) * 100, len(es)))
-    for e in es:
-        tag = "🔮前進" if e.get("kind") != "backfill_biased" else "🧪回填"
-        line = "── 第%d筆 %s | 基準日%s | %s | %d檔" % (e["entry_no"], tag, e["as_of_data"], e["status"], e["n_holdings"])
-        if e["status"] == "closed":
-            line += " → 出場%s 組合%+.2f%% 大盤%+.2f%% 超額%+.2f%%" % (
-                e["exit_date"], e["exit_value_return_pct"], e["benchmark_return_pct"], e["excess_pct"])
-        print(line)
-    closed = [e for e in es if e["status"] == "closed"]
-    if closed:
-        fwd = [e for e in closed if e.get("kind") != "backfill_biased"]
-        ex = [e["excess_pct"] for e in closed]
-        beat = np.mean([1.0 if x > 0 else 0.0 for x in ex]) * 100
-        eq = float(np.prod([1 + e["exit_value_return_pct"] / 100 for e in closed]))
-        print("\n📊 已結算 %d 筆（前進%d / 回填%d）：贏大盤 %.0f%%、平均超額 %+.2f%%/月、累積組合淨值 %.2fx"
-              % (len(closed), len(fwd), len(closed) - len(fwd), beat, float(np.mean(ex)), eq))
-    open_n = [e for e in es if e["status"] == "open"]
-    if open_n:
-        print("⏳ 開倉中未結算：%d 筆（到期後 --mark 結算）" % len(open_n))
-    # 北極星對照（中台監督）：AI 月成本 vs 紙上策略覆蓋能力。
-    # 只採「前進」筆（回填筆含存活偏誤不採計）；成本由 .env AI_COST_MONTHLY_TWD 設定，
-    # 未設定/無樣本就誠實寫缺失，不編數字。
-    ai_cost = os.environ.get("AI_COST_MONTHLY_TWD")
-    fwd_closed = [e for e in es if e["status"] == "closed" and e.get("kind") != "backfill_biased"]
-    print()
-    if not ai_cost:
-        print("💰 北極星對照：未設定 AI_COST_MONTHLY_TWD（.env），略過成本對照。")
-    elif not fwd_closed:
-        print("💰 北極星對照：AI 月成本 NT$%s ｜尚無已結算的前進紀錄，等首筆前進結算後開始對照（回填筆含偏誤不採計）。"
-              % format(int(float(ai_cost)), ","))
+
+    # ── 1) 回填摘要（含存活偏誤，僅供驗算/種子，不能當 edge 證據）
+    print("\n🧪 回填摘要（⚠含存活偏誤，僅供驗算/種子，不代表前進 edge）")
+    bf = group_stats(bf_closed)
+    if bf:
+        _print_closed_lines(bf_closed)
+        print("   小計 %d 筆：贏大盤 %.0f%%、平均超額 %+.2f%%/月、累積淨值 %.2fx（僅回填，非 edge 證據）"
+              % (bf["n"], bf["beat_pct"], bf["mean_excess"], bf["equity_mult"]))
     else:
-        mx = float(np.mean([e["excess_pct"] for e in fwd_closed]))
-        cost = float(ai_cost)
-        if mx > 0:
-            need = cost / (mx / 100.0)
-            print("💰 北極星對照：AI 月成本 NT$%s ｜前進平均超額 %+.2f%%/月 → 需投入本金約 NT$%s 才覆蓋成本"
-                  "（樣本僅 %d 筆前進，波動大、僅供方向參考）"
-                  % (format(int(cost), ","), mx, format(int(round(need, -3)), ","), len(fwd_closed)))
-        else:
-            print("💰 北極星對照：AI 月成本 NT$%s ｜前進平均超額 %+.2f%%/月 ≤ 0，目前紙上策略無法覆蓋成本"
-                  "（誠實紀錄，%d 筆前進樣本）" % (format(int(cost), ","), mx, len(fwd_closed)))
+        print("   （無回填紀錄）")
+
+    # ── 2) 前進已結算摘要（乾淨前進紀錄，唯一可採信的 edge 證據）
+    print("\n🔮 前進已結算摘要（乾淨前進紀錄，唯一可採信的 edge 證據）")
+    fc = group_stats(fwd_closed)
+    if fc:
+        _print_closed_lines(fwd_closed)
+        print("   小計 %d 筆：贏大盤 %.0f%%、平均超額 %+.2f%%/月、累積淨值 %.2fx"
+              % (fc["n"], fc["beat_pct"], fc["mean_excess"], fc["equity_mult"]))
+    else:
+        print("   尚無前進結算 → edge 未驗證（回填數字不能代替前進結算，不得當 edge 主結論）。")
+
+    # ── 3) 前進開倉中（尚未到期結算）
+    print("\n⏳ 前進開倉中（尚未到期結算）")
+    if fwd_open:
+        for e in fwd_open:
+            print("   ── 第%d筆 基準日%s %d檔（到期後 --mark 結算）"
+                  % (e["entry_no"], e["as_of_data"], e["n_holdings"]))
+    else:
+        print("   （無開倉中部位）")
+
+    # ── 北極星成本覆蓋率對照（只採前進已結算樣本；回填筆含偏誤不採計）
+    print("\n💰 北極星成本覆蓋率對照（只採前進已結算樣本）")
+    pa = polaris_assessment(fwd_closed, os.environ.get("AI_COST_MONTHLY_TWD"),
+                            _verification_capital())
+    if pa["status"] == "no_cost":
+        print("   未設定 AI_COST_MONTHLY_TWD（.env），無法驗證成本覆蓋。")
+    elif pa["status"] == "no_fwd_closed":
+        print("   AI 月成本 NT$%s ｜尚無前進結算，覆蓋率不可計算（回填筆含偏誤不採計）。"
+              % _twd(pa["ai_cost"]))
+    else:
+        print("   AI 月成本：NT$%s/月" % _twd(pa["ai_cost"]))
+        print("   前進平均超額：%+.2f%%/月（%d 筆前進樣本，波動大、僅供方向參考）"
+              % (pa["mean_excess"], pa["n"]))
+        print("   假設本金：NT$%s（env STOCK_VERIFICATION_CAPITAL_TWD，預設 NT$%s）"
+              % (_twd(pa["capital"]), _twd(DEFAULT_VERIFICATION_CAPITAL)))
+        print("   估算月超額金額：NT$%s/月" % _twd(pa["monthly_excess_twd"]))
+        covered = "已覆蓋 AI 成本" if pa["coverage_pct"] >= 100 else "尚未覆蓋 AI 成本"
+        print("   → 成本覆蓋率：%.1f%%（%s）" % (pa["coverage_pct"], covered))
 
 
 def main():
