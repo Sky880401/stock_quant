@@ -343,6 +343,190 @@ def show(led):
         print("   → 成本覆蓋率：%.1f%%（%s）" % (pa["coverage_pct"], covered))
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# #901 驗證第一優先：模擬下單報酬視角（--returns / --show-returns）
+#   Sky 指示：成本先不抓，先看『模擬下單到底可得到多少報酬』。
+#   分三線：① 已平倉 realized（只採前進 closed；回填可列但明標 biased）
+#           ② 開倉中 unrealized MTM（輕量單檔 cache，不重建全市場 panel）
+#           ③ 總體目前可量測報酬（前進 closed=0 → 還沒 realized edge；open 只是未實現）
+#   缺價誠實列 missing 不可編；快取日期不一致以 price_date_min/max 明示。
+# ──────────────────────────────────────────────────────────────────────────
+FRAMES_DIR = os.path.join(ROOT, "data", "quant_cache", "frames")
+WIDE_FRAMES_DIR = os.path.join(ROOT, "data", "quant_cache", "wide_frames")
+
+
+def _light_latest_price(sid):
+    """單檔最新收盤（輕量路徑，不重建全市場 panel）。先 frames/ 後 wide_frames/。
+    回 (price, 'YYYY-MM-DD')；取不到 → (None, None)，由上層誠實列 missing，嚴禁編價。"""
+    for base in (FRAMES_DIR, WIDE_FRAMES_DIR):
+        f = os.path.join(base, "%s.pkl" % sid)
+        if not os.path.exists(f):
+            continue
+        try:
+            df = pd.read_pickle(f)
+        except Exception:
+            continue
+        if "Close" not in getattr(df, "columns", []) or len(df) == 0:
+            continue
+        s = df["Close"].dropna()
+        if len(s) == 0:
+            continue
+        px = float(s.iloc[-1])
+        if px <= 0:
+            continue
+        return px, str(pd.Timestamp(s.index[-1]).date())
+    return None, None
+
+
+def mtm_open_holdings(entries, price_fn=_light_latest_price):
+    """對開倉中 entries 逐檔以最新單檔價算未實現報酬（MTM）。
+    回 dict：rets=[{sid,entry_no,entry_price,last_price,price_date,ret_pct}]（有價者）、
+            missing=[{sid,entry_no,entry_price}]（取不到價，誠實列出，不編）。"""
+    rets, missing = [], []
+    for e in entries:
+        for h in e.get("holdings", []):
+            sid = h["sid"]
+            p0 = h.get("entry_price")
+            px, pdate = price_fn(sid)
+            if px is None or px <= 0 or not p0 or p0 <= 0:
+                missing.append({"sid": sid, "entry_no": e.get("entry_no"),
+                                "entry_price": p0})
+                continue
+            rets.append({"sid": sid, "entry_no": e.get("entry_no"), "entry_price": p0,
+                         "last_price": px, "price_date": pdate,
+                         "ret_pct": (px / p0 - 1) * 100})
+    return {"rets": rets, "missing": missing}
+
+
+def returns_summary(ret_pcts, price_dates=None, rt=RT, cost_already_applied=False):
+    """報酬分布統計（輸入為百分比 list）。空組 → count=0、其餘 None（不編造）。
+    欄位：count、win_rate、avg_return_pct、median_return_pct、best、worst、
+          gross_equal_weight_return_pct、net_if_exit_now_pct、price_date_min/max。
+    cost_already_applied=True（已平倉，報酬已含一買一賣成本）：
+        gross = mean + 來回成本（還原毛），net_if_exit_now = mean（已是淨報酬）。
+    cost_already_applied=False（開倉中 MTM，毛報酬）：
+        gross = mean，net_if_exit_now = mean − 來回成本（現在出場的淨報酬）。"""
+    if not ret_pcts:
+        return {"count": 0, "win_rate": None, "avg_return_pct": None,
+                "median_return_pct": None, "best": None, "worst": None,
+                "gross_equal_weight_return_pct": None, "net_if_exit_now_pct": None,
+                "price_date_min": None, "price_date_max": None}
+    arr = np.array(ret_pcts, dtype=float)
+    mean = float(arr.mean())
+    rt_pct = rt * 100
+    if cost_already_applied:
+        gross, net_now = mean + rt_pct, mean
+    else:
+        gross, net_now = mean, mean - rt_pct
+    pds = sorted(d for d in (price_dates or []) if d)
+    return {"count": int(arr.size),
+            "win_rate": float((arr > 0).mean() * 100),
+            "avg_return_pct": mean,
+            "median_return_pct": float(np.median(arr)),
+            "best": float(arr.max()), "worst": float(arr.min()),
+            "gross_equal_weight_return_pct": gross,
+            "net_if_exit_now_pct": net_now,
+            "price_date_min": pds[0] if pds else None,
+            "price_date_max": pds[-1] if pds else None}
+
+
+def realized_summary(fwd_closed):
+    """前進已結算報酬摘要（每筆 = 一次等權往返；exit_value_return_pct 已含來回成本）。"""
+    rets = [e["exit_value_return_pct"] for e in fwd_closed
+            if e.get("exit_value_return_pct") is not None]
+    dates = [e.get("exit_date") for e in fwd_closed]
+    return returns_summary(rets, dates, cost_already_applied=True)
+
+
+def open_mtm_summary(fwd_open, price_fn=_light_latest_price):
+    """開倉中未實現報酬摘要（逐檔等權）+ missing 清單。"""
+    mtm = mtm_open_holdings(fwd_open, price_fn)
+    rets = [r["ret_pct"] for r in mtm["rets"]]
+    dates = [r["price_date"] for r in mtm["rets"]]
+    summ = returns_summary(rets, dates, cost_already_applied=False)
+    summ["missing"] = mtm["missing"]
+    summ["missing_count"] = len(mtm["missing"])
+    summ["detail"] = mtm["rets"]
+    return summ
+
+
+def _print_returns_stats(s, realized):
+    print("   count=%d ｜win_rate=%.0f%% ｜avg=%+.2f%% ｜median=%+.2f%% ｜best=%+.2f%% ｜worst=%+.2f%%"
+          % (s["count"], s["win_rate"], s["avg_return_pct"], s["median_return_pct"],
+             s["best"], s["worst"]))
+    if realized:
+        print("   gross_equal_weight=%+.2f%%（還原毛）｜net=%+.2f%%（已實現淨，已含來回成本）"
+              % (s["gross_equal_weight_return_pct"], s["net_if_exit_now_pct"]))
+    else:
+        print("   gross_equal_weight=%+.2f%%（未實現毛）｜net_if_exit_now=%+.2f%%（現在出場扣來回成本）"
+              % (s["gross_equal_weight_return_pct"], s["net_if_exit_now_pct"]))
+
+
+def returns_report(led, price_fn=_light_latest_price):
+    """#901 模擬下單報酬報表：realized / 開倉MTM / 總體可量測報酬。"""
+    es = led["entries"]
+    bf_closed, fwd_closed, fwd_open = classify_entries(es)
+    rt = led.get("cost_round_trip", RT)
+
+    print("══ 模擬下單報酬（paper orders returns）｜策略 %s ══" % led["strategy"])
+    print("   來回成本 %.3f%% ｜共 %d 筆（回填 %d / 前進已結算 %d / 前進開倉中 %d）"
+          % (rt * 100, len(es), len(bf_closed), len(fwd_closed), len(fwd_open)))
+
+    rs = realized_summary(fwd_closed)
+    ms = open_mtm_summary(fwd_open, price_fn)
+
+    # 主結論前置：誠實話術，避免把未結算當成功
+    if rs["count"] == 0:
+        print("\n⚠ 主結論前提：目前『前進已結算』= 0 筆 → 還沒有 realized edge（尚無已實現報酬）。")
+        print("   下方開倉中 MTM 只是『未實現報酬』，會隨價格波動、尚未落袋，不可當成功。")
+        if bf_closed:
+            print("   （回填筆含存活偏誤，僅供驗算，永不採計為前進報酬主結論。）")
+
+    # ── ① 已平倉 realized（前進 closed；回填另列、明標 biased）
+    print("\n① 已平倉 realized（前進 closed = 唯一可採信報酬證據）")
+    if rs["count"]:
+        _print_returns_stats(rs, realized=True)
+        print("   出場日 price_date_min=%s price_date_max=%s"
+              % (rs["price_date_min"], rs["price_date_max"]))
+    else:
+        print("   尚無前進已結算 → realized 報酬不可計（不得用回填冒充）。")
+    bs = returns_summary([e["exit_value_return_pct"] for e in bf_closed],
+                         [e.get("exit_date") for e in bf_closed], cost_already_applied=True)
+    if bs["count"]:
+        print("   ── 回填參考（⚠含存活偏誤，非前進 edge）：%d 筆 avg%+.2f%% median%+.2f%% win%.0f%% best%+.2f%% worst%+.2f%%"
+              % (bs["count"], bs["avg_return_pct"], bs["median_return_pct"],
+                 bs["win_rate"], bs["best"], bs["worst"]))
+
+    # ── ② 開倉中 unrealized MTM（輕量單檔 cache）
+    print("\n② 開倉中 unrealized MTM（未實現；輕量單檔 cache，不重建全市場 panel）")
+    if ms["count"] or ms["missing_count"]:
+        if ms["count"]:
+            _print_returns_stats(ms, realized=False)
+            spread = "" if ms["price_date_min"] == ms["price_date_max"] else "（快取跨日，已明示）"
+            print("   price_date_min=%s price_date_max=%s%s"
+                  % (ms["price_date_min"], ms["price_date_max"], spread))
+        if ms["missing_count"]:
+            miss = ", ".join("%s(第%s筆)" % (m["sid"], m["entry_no"]) for m in ms["missing"])
+            print("   ⚠ 缺價 %d 檔，誠實列 missing（不編價、不納入統計）：%s"
+                  % (ms["missing_count"], miss))
+    else:
+        print("   （無開倉中部位）")
+
+    # ── ③ 總體目前可量測報酬（overall）
+    print("\n③ 總體目前可量測報酬（overall）")
+    if rs["count"]:
+        print("   已實現（前進）：%d 筆，平均淨 %+.2f%%/筆 → 這才是可採信的報酬。"
+              % (rs["count"], rs["net_if_exit_now_pct"]))
+    else:
+        print("   已實現（前進）：0 筆 → 目前可落袋報酬 = 無，edge 尚未驗證。")
+    if ms["count"]:
+        print("   未實現（開倉 MTM）：%d 檔，毛 %+.2f%% / 現在出場淨 %+.2f%%（僅未實現，非成功）。"
+              % (ms["count"], ms["gross_equal_weight_return_pct"], ms["net_if_exit_now_pct"]))
+    print("   ⇒ %s" % ("目前無前進結算，唯一可量測者僅未實現 MTM，尚不能宣稱賺到報酬。"
+                       if rs["count"] == 0 else
+                       "以前進已實現報酬為準；未實現 MTM 僅供追蹤。"))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--open", action="store_true")
@@ -351,6 +535,8 @@ def main():
     ap.add_argument("--tick", action="store_true")
     ap.add_argument("--fresh", action="store_true", help="強制重抓最新股價(月度自動化用)")
     ap.add_argument("--show", action="store_true")
+    ap.add_argument("--returns", "--show-returns", dest="returns", action="store_true",
+                    help="#901 模擬下單報酬視角：realized / 開倉MTM / 總體可量測報酬")
     a = ap.parse_args()
     led = load_ledger()
     if a.backfill or a.mark or a.open or a.tick:
@@ -361,7 +547,10 @@ def main():
             led = mark(led, closes, fts, dates)
         if a.open or a.tick:
             led = open_entry(led, closes, fts, dates)
-    show(led)
+    if a.returns:
+        returns_report(led)
+    else:
+        show(led)
 
 
 if __name__ == "__main__":
