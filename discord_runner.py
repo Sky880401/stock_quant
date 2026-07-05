@@ -578,11 +578,13 @@ async def show_strategies(ctx, mode: str = None):
                 )
                 embed.add_field(name="分類", value=strat.category, inline=True)
                 embed.add_field(name="難度", value=f"{difficulty_emoji} {strat.difficulty}", inline=True)
-                embed.add_field(name="準確率", value=f"{strat.accuracy*100:.1f}%", inline=True)
-                embed.add_field(name="勝率", value=f"{strat.win_rate*100:.1f}%", inline=True)
-                embed.add_field(name="Sharpe比率", value=f"{strat.sharpe_ratio:.2f}", inline=True)
-                embed.add_field(name="平均ROI", value=f"{strat.avg_roi:.1f}%", inline=True)
-                embed.add_field(name="歷史交易", value=f"{strat.total_trades}筆", inline=False)
+                # 2026-07-05 誠實化:原本這裡的準確率/勝率/Sharpe/ROI/歷史交易全是 strategy_registry
+                # 硬編值(update_strategy_performance 從未被呼叫)→ 移除假數字,導向 !accuracy 的真實命中率。
+                embed.add_field(
+                    name="⚠️ 績效數據",
+                    value="策略準確率/勝率/Sharpe/ROI 尚未接真實回測(原為示意值,已移除)。\n"
+                          "真實買進命中率請用 `!accuracy`。",
+                    inline=False)
                 embed.set_footer(text=f"更新於: {strat.last_updated[:10]}")
                 await ctx.send(embed=embed)
         else:
@@ -1171,22 +1173,22 @@ async def show_accuracy(ctx):
             )
             return
         lines = [
-            "📊 BMO 歷史預測命中率",
-            f"整體命中率：{s['hit_rate']}%（已結算 {s['closed']} 筆，{s['open']} 筆待到期）",
-            f"平均報酬：{s['avg_return']}%",
+            "📊 BMO 歷史預測命中率（選股訊號）",
+            f"買進選股命中率：{s['buy_hit_rate']}%（{s['buy_n']} 筆已結算，{s['open']} 筆待到期）",
+            f"買進平均報酬：{s['buy_avg_return']}%",
         ]
-        if s["by_strategy"]:
-            from utils.strategy_weights import MIN_SAMPLES
+        if s.get("riskoff_n"):
+            lines.append(
+                f"減碼/出場（風控，非看空賭注）：事後真跌 {s['riskoff_drop_rate']}%"
+                f"（{s['riskoff_n']} 筆），該股平均報酬 {s['riskoff_avg_return']}%")
+        if s.get("by_strategy_buy"):
             lines.append("")
-            lines.append(f"各策略（Kelly 採用門檻 {MIN_SAMPLES} 筆）：")
-            for b in s["by_strategy"][:6]:
-                if b["n"] >= MIN_SAMPLES:
-                    mark = "✅ 倉位已用P1實測"
-                else:
-                    mark = f"⏳ 還需{MIN_SAMPLES - b['n']}筆(暫用回測)"
-                lines.append(f"{b['strategy']}：{b['rate']}%（{b['hits']}/{b['n']}）{mark}")
+            lines.append("各策略買進命中率：")
+            for b in s["by_strategy_buy"][:6]:
+                lines.append(f"{b['strategy']}：{b['rate']}%（{b['hits']}/{b['n']}）")
         lines.append("")
-        lines.append("註：命中＝看多後實際漲、看空後實際跌。合理目標 53-57%。")
+        lines.append("註：買進命中＝看多後實際漲;減碼/出場是風控不是看空賭注,另計不混入選股命中率。"
+                     "命中率≠已證實edge,真edge看紙上帳本含成本超額。")
         await ctx.send("\n".join(lines))
     except Exception as e:
         log_error(f"!accuracy 失敗: {e}")
@@ -1334,10 +1336,10 @@ async def strategy_health(ctx):
             return
 
         healthy = weak = pending = 0
-        total_hits = sum(b["hits"] for b in s["by_strategy"])
+        total_hits = sum(b["hits"] for b in s.get("by_strategy_buy", []))
         lines = [
             "🩺 策略健康體檢（依 P1 實測命中率）",
-            f"整體：{s['hit_rate']}%（={total_hits}/{s['closed']}）｜平均報酬 {s['avg_return']}%",
+            f"買進選股：{s['buy_hit_rate']}%（={total_hits}/{s['buy_n']}）｜買進平均報酬 {s['buy_avg_return']}%",
             f"門檻：≥{HEALTHY:.0f}% 可下注、{MARGIN:.0f}-{HEALTHY:.0f}% 謹慎、<{MARGIN:.0f}% 建議停用",
             "",
         ]

@@ -160,39 +160,62 @@ def backfill_matured(price_func):
 
 
 def accuracy_summary():
-    """回傳整體 + 各策略的歷史命中率與樣本數，供 !accuracy 顯示。"""
+    """買進選股訊號 vs 減碼/出場(風控)分開的歷史命中率，供 !accuracy 顯示。
+
+    2026-07-05 修正(harness 審計):原本把 REDUCE/減碼、EXIT/出場 當「看空賭注」與 BUY 混算成
+    單一命中率(壓成 ~46% 假象、埋掉買進訊號真實 ~61% 的方向命中);平均報酬又用 raw return
+    (沒調方向)顯示成假正值。現改為兩塊:買進訊號(選股 edge)為頭條;減碼/出場另計「事後是否
+    真的下跌」當風控參考,不混算。by_strategy 維持「全部」語意不變,strategy_weights 的 Kelly
+    倉位不受影響;by_strategy_buy 才是顯示用(只買進)。
+    """
     init_db()
     with _conn() as con:
         total_open = con.execute(
             "SELECT COUNT(*) FROM predictions WHERE status='open'").fetchone()[0]
         closed = con.execute(
-            "SELECT correct, strategy, actual_return FROM predictions WHERE status='closed'"
+            "SELECT direction, correct, strategy, actual_return "
+            "FROM predictions WHERE status='closed'"
         ).fetchall()
 
     n = len(closed)
     if n == 0:
-        return {"closed": 0, "open": total_open, "hit_rate": None,
-                "avg_return": None, "by_strategy": [], "recent": []}
+        return {"closed": 0, "open": total_open, "hit_rate": None, "avg_return": None,
+                "by_strategy": [], "by_strategy_buy": [],
+                "buy_n": 0, "buy_hit_rate": None, "buy_avg_return": None,
+                "riskoff_n": 0, "riskoff_drop_rate": None, "riskoff_avg_return": None}
 
-    hits = sum(r["correct"] for r in closed)
-    avg_ret = sum(r["actual_return"] for r in closed) / n
+    longs = [r for r in closed if r["direction"] == "long" and r["correct"] is not None]
+    riskoff = [r for r in closed if r["direction"] == "short" and r["correct"] is not None]
 
-    by = {}
-    for r in closed:
-        s = r["strategy"] or "未知"
-        by.setdefault(s, [0, 0])
-        by[s][1] += 1
-        by[s][0] += r["correct"]
-    by_strategy = sorted(
-        [{"strategy": s, "hits": h, "n": cnt, "rate": round(h / cnt * 100, 1)}
-         for s, (h, cnt) in by.items()],
-        key=lambda x: x["n"], reverse=True,
-    )
+    def _bucket(rs):
+        m = len(rs)
+        if m == 0:
+            return 0, None, None
+        hit = round(sum(r["correct"] for r in rs) / m * 100, 1)
+        avg = round(sum((r["actual_return"] or 0.0) for r in rs) / m, 2)
+        return m, hit, avg
+
+    buy_n, buy_hit, buy_avg = _bucket(longs)     # correct==1 → 看多後漲
+    ro_n, ro_drop, ro_avg = _bucket(riskoff)     # correct==1 → 減碼/出場後真的跌(風控對)
+
+    def _by(rows):
+        d = {}
+        for r in rows:
+            if r["correct"] is None:
+                continue
+            s = r["strategy"] or "未知"
+            d.setdefault(s, [0, 0]); d[s][1] += 1; d[s][0] += r["correct"]
+        return sorted(
+            [{"strategy": s, "hits": h, "n": c, "rate": round(h / c * 100, 1)}
+             for s, (h, c) in d.items()],
+            key=lambda x: x["n"], reverse=True)
 
     return {
-        "closed": n,
-        "open": total_open,
-        "hit_rate": round(hits / n * 100, 1),
-        "avg_return": round(avg_ret, 2),
-        "by_strategy": by_strategy,
+        "closed": n, "open": total_open,
+        # 頭條 = 買進選股訊號(誠實 edge);相容舊 hit_rate/avg_return 也指這個
+        "buy_n": buy_n, "buy_hit_rate": buy_hit, "buy_avg_return": buy_avg,
+        "hit_rate": buy_hit, "avg_return": buy_avg,
+        "by_strategy": _by(closed),          # 全部(給 Kelly / strategy_weights,語意不變)
+        "by_strategy_buy": _by(longs),       # 只買進(給 !accuracy 顯示,與頭條一致)
+        "riskoff_n": ro_n, "riskoff_drop_rate": ro_drop, "riskoff_avg_return": ro_avg,
     }
