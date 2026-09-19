@@ -1481,6 +1481,119 @@
           "rev_yoy_pct": 41.8
         }
       ],
+      "status": "closed",
+      "exit_date": "2026-08-07",
+      "exit_value_return_pct": 2.43,
+      "benchmark_return_pct": 0.03,
+      "excess_pct": 2.41
+    },
+    {
+      "entry_no": 14,
+      "kind": "forward",
+      "logged_on": "2026-09-19",
+      "as_of_data": "2026-09-18",
+      "n_holdings": 14,
+      "method": "revyoy top quintile, equal weight, long-only, no-lookahead",
+      "holdings": [
+        {
+          "sid": "2408",
+          "entry_price": 525.0,
+          "weight": 0.0714,
+          "revyoy_z": 6.03,
+          "rev_yoy_pct": 560.9
+        },
+        {
+          "sid": "2059",
+          "entry_price": 12495.0,
+          "weight": 0.0714,
+          "revyoy_z": 3.484,
+          "rev_yoy_pct": 344.4
+        },
+        {
+          "sid": "2451",
+          "entry_price": 283.0,
+          "weight": 0.0714,
+          "revyoy_z": 2.673,
+          "rev_yoy_pct": 275.5
+        },
+        {
+          "sid": "3661",
+          "entry_price": 3540.0,
+          "weight": 0.0714,
+          "revyoy_z": 2.651,
+          "rev_yoy_pct": 273.6
+        },
+        {
+          "sid": "2382",
+          "entry_price": 343.0,
+          "weight": 0.0714,
+          "revyoy_z": 1.521,
+          "rev_yoy_pct": 177.5
+        },
+        {
+          "sid": "3231",
+          "entry_price": 186.5,
+          "weight": 0.0714,
+          "revyoy_z": 1.391,
+          "rev_yoy_pct": 166.5
+        },
+        {
+          "sid": "2360",
+          "entry_price": 2290.0,
+          "weight": 0.0714,
+          "revyoy_z": 1.271,
+          "rev_yoy_pct": 156.3
+        },
+        {
+          "sid": "2347",
+          "entry_price": 90.8,
+          "weight": 0.0714,
+          "revyoy_z": 0.867,
+          "rev_yoy_pct": 121.9
+        },
+        {
+          "sid": "3443",
+          "entry_price": 7150.0,
+          "weight": 0.0714,
+          "revyoy_z": 0.738,
+          "rev_yoy_pct": 111.0
+        },
+        {
+          "sid": "6446",
+          "entry_price": 1180.0,
+          "weight": 0.0714,
+          "revyoy_z": 0.673,
+          "rev_yoy_pct": 105.4
+        },
+        {
+          "sid": "2376",
+          "entry_price": 356.0,
+          "weight": 0.0714,
+          "revyoy_z": 0.59,
+          "rev_yoy_pct": 98.4
+        },
+        {
+          "sid": "2395",
+          "entry_price": 690.0,
+          "weight": 0.0714,
+          "revyoy_z": 0.462,
+          "rev_yoy_pct": 87.5
+        },
+        {
+          "sid": "2615",
+          "entry_price": 120.5,
+          "weight": 0.0714,
+          "revyoy_z": 0.204,
+          "rev_yoy_pct": 65.6
+        },
+        {
+          "sid": "2345",
+          "entry_price": 1855.0,
+          "weight": 0.0714,
+          "revyoy_z": 0.132,
+          "rev_yoy_pct": 59.4
+        }
+      ],
       "status": "open",
       "exit_date": null,
       "exit_value_return_pct": null,
